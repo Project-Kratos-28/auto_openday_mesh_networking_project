@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(source /opt/ros/jazzy/setup.bash)",
+      "Bash(source install/setup.bash)",
+      "Bash(colcon build *)",
+      "Bash(colcon test *)",
+      "Bash(ros2 launch *)",
+      "Bash(ros2 topic *)",
+      "Bash(ros2 node *)",
+      "Bash(ros2 pkg *)",
+      "Bash(ros2 interface *)",
+      "Bash(gz topic *)",
+      "Bash(gz model *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ],
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(rm -rf *)",
+      "Bash(git push *)",
+      "Read(./.env)"
+    ]
+  }
+}
