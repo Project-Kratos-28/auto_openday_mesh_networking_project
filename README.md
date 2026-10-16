@@ -105,34 +105,65 @@ scheduled:                   # scripted failures for the demo
 ```
 You can change the settings live by publishing to `mesh/failure/control`, for example `{"corrupt_probability": 0.3}`.
 
-## 4. Requirements
+## 4. Setup on a new laptop (step by step)
 
-| Tool | Version |
-|---|---|
-| Ubuntu | 24.04 |
-| ROS 2 | Jazzy (`ros-jazzy-desktop`, `ros-dev-tools`) |
-| Gazebo | Harmonic (`gz-harmonic`) + `ros-jazzy-ros-gz` |
-| Zenoh (Python) | `eclipse-zenoh` 1.x (for the mesh protocol, failure injection, GUI) |
-| Zenoh for ROS 2 (optional) | `ros-jazzy-rmw-zenoh-cpp` |
+Do this **once** per laptop. It takes about 30–60 minutes, mostly downloading.
 
-> ⚠️ Use **Gazebo Harmonic** (`gz sim`). Do **not** install Gazebo Classic (`gazebo`, `gazebo11`, `gazebo_ros`) — it conflicts. Many online tutorials use the old version.
+**You need:** **Ubuntu 24.04** (native install or dual boot is best. On Windows, WSL2 with Ubuntu 24.04 also works) and about **15 GB** of free disk space.
 
-Install Gazebo Harmonic for ROS 2 Jazzy:
+> 📶 **On campus Wi-Fi?** If a download fails with `SSL certificate problem: self-signed certificate`, switch to a phone hotspot for the setup. The campus firewall blocks some downloads.
+
+Open a terminal (`Ctrl + Alt + T`) and run each block in order. Lines starting with `#` are explanations.
+
+**Step 1: Language settings** (ROS 2 needs UTF-8)
 ```bash
-sudo curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
-sudo apt update && sudo apt install -y gz-harmonic ros-jazzy-ros-gz
+sudo apt update && sudo apt install -y locales
+sudo locale-gen en_US en_US.UTF-8
+sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+export LANG=en_US.UTF-8
 ```
 
-Install Zenoh:
+**Step 2: Add the ROS 2 package source** (tells Ubuntu where to download ROS from)
 ```bash
-pip install --break-system-packages eclipse-zenoh     # Python Zenoh library
-python3 -c "import zenoh; print('zenoh OK')"         # check
+sudo apt install -y software-properties-common curl
+sudo add-apt-repository -y universe
+export ROS_APT_SOURCE_VERSION=$(curl -s https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F "tag_name" | awk -F'"' '{print $4}')
+curl -L -o /tmp/ros2-apt-source.deb "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ROS_APT_SOURCE_VERSION}/ros2-apt-source_${ROS_APT_SOURCE_VERSION}.$(. /etc/os-release && echo ${UBUNTU_CODENAME:-${VERSION_CODENAME}})_all.deb"
+sudo dpkg -i /tmp/ros2-apt-source.deb
+```
 
-# optional: run ROS 2 itself over Zenoh
+**Step 3: Install ROS 2 Jazzy + build tools**
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y ros-jazzy-desktop ros-dev-tools git
+echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc     # load ROS 2 in every new terminal
+source ~/.bashrc
+```
+
+**Step 4: Install Gazebo Harmonic + the ROS–Gazebo bridge**
+```bash
+# add the Gazebo package source
+sudo curl https://packages.osrfoundation.org/gazebo.gpg --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/gazebo-stable.list > /dev/null
+# install Gazebo itself (gives the `gz` command) and the ROS 2 connection
+sudo apt update && sudo apt install -y gz-harmonic ros-jazzy-ros-gz
+```
+> ⚠️ Use **Gazebo Harmonic** (`gz sim`) only. Do **not** install Gazebo Classic (`gazebo`, `gazebo11`, `gazebo_ros`). It conflicts with Harmonic, and many online tutorials still use it.
+
+**Step 5: Install Zenoh** (networking library for the mesh protocol)
+```bash
+pip install --break-system-packages eclipse-zenoh
+# optional: run ROS 2 itself over Zenoh instead of DDS
 sudo apt install -y ros-jazzy-rmw-zenoh-cpp
-ros2 run rmw_zenoh_cpp rmw_zenohd                     # Zenoh router (keep it running in its own terminal)
-export RMW_IMPLEMENTATION=rmw_zenoh_cpp               # in every terminal that runs ROS 2 nodes
+```
+
+**Step 6: Check everything works.** Open a **new** terminal, then run:
+```bash
+echo $ROS_DISTRO                                   # → jazzy
+gz sim --version                                   # → Gazebo Sim, version 8.x
+ros2 pkg list | grep ros_gz_sim                    # → ros_gz_sim
+python3 -c "import zenoh; print('zenoh OK')"       # → zenoh OK
+gz sim shapes.sdf                                  # a window with simple shapes opens (close it after)
 ```
 
 Zenoh test: save this as `zenoh_hello.py` and run `python3 zenoh_hello.py`. It should print `received: ...`.
@@ -149,18 +180,31 @@ time.sleep(1)
 session.close()
 ```
 
-## 5. Quick start
+Optional, ROS 2 over Zenoh: run the router `ros2 run rmw_zenoh_cpp rmw_zenohd` in its own terminal, and `export RMW_IMPLEMENTATION=rmw_zenoh_cpp` in every terminal that runs ROS 2 nodes.
 
-This repository **is** a ROS 2 workspace (packages live in `src/`).
+## 5. Get the project and run it
 
+**Step 1: Get access.** This repo is **private**. Ask the repo owner to add your GitHub account (repo → Settings → Collaborators), then **accept the invite** from the email or from github.com/notifications.
+
+**Step 2: Log in to GitHub from the terminal** (once per laptop):
 ```bash
-git clone <this-repo-url> ~/mars_ws          # 1. download the project
-cd ~/mars_ws
-source /opt/ros/jazzy/setup.bash             # 2. load ROS 2
-colcon build --symlink-install               # 3. build all packages
-source install/setup.bash                    # 4. load our packages
-ros2 launch mars_sim sim.launch.py           # 5. start the simulation
+sudo apt install -y gh
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"        # the email on your GitHub account
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git                                       # lets git use this login
 ```
+`gh auth login` shows a one-time code. Press Enter, and a browser opens at github.com/login/device. Type the code there and click **Authorize**. Keep the terminal open until it says `Logged in as ...`.
+
+**Step 3: Download (clone), build, run.** This repository **is** a ROS 2 workspace, with packages in `src/`. Always clone it into `~/mars_ws`:
+```bash
+git clone https://github.com/Project-Kratos-28/auto_openday_mesh_networking_project.git ~/mars_ws
+cd ~/mars_ws
+colcon build --symlink-install               # build all packages
+source install/setup.bash                    # load our packages into this terminal
+ros2 launch mars_sim sim.launch.py           # start the simulation
+```
+> Tip: add `source ~/mars_ws/install/setup.bash` to `~/.bashrc` so every new terminal knows our packages.
 
 Gazebo opens with the crater world. Press ▶ (bottom-left) if the simulation is paused.
 
@@ -221,7 +265,85 @@ cd ~/mars_ws/src/mars_sim && python3 scripts/generate_crater.py
 cd ~/mars_ws && colcon build --symlink-install
 ```
 
-## 8. Interfaces
+## 8. Working on the Gazebo simulation (team guide)
+
+Anyone in the team can work on the simulation. Follow this so we don't overwrite each other's work.
+
+### Which file controls what
+
+| I want to change... | Edit this file | Rebuild needed? |
+|---|---|---|
+| Where the rover / drones / base start | `src/mars_sim/worlds/mars_crater.sdf` (the `<pose>` lines) | No, just relaunch |
+| Add or remove a drone | `worlds/mars_crater.sdf`: copy or delete one `<include>` block and give it a new `<name>` | No |
+| Gravity, sky colour, sun, lighting | `worlds/mars_crater.sdf` | No |
+| Rover shape, wheels, speed topic | `models/primary_rover/model.sdf` | No |
+| Drone shape | `models/relay_drone/model.sdf` (all 4 drones use it) | No |
+| Base station shape | `models/base_station/model.sdf` | No |
+| Crater size, depth, bumps | `scripts/generate_crater.py`, then run it (see below) | Run the script |
+| Add a **new** model or world file | new folder in `models/` (needs `model.config` + `model.sdf`) or a new `.sdf` in `worlds/` | **Yes** |
+| Launch options | `launch/sim.launch.py` | No |
+
+"No rebuild" works because we build with `--symlink-install`: the installed files point back to your edited files. Just close Gazebo (`Ctrl + C`) and launch again. **New** files always need `colcon build --symlink-install`.
+
+### The edit → test → share loop
+
+```bash
+# 1. Start from the latest version (ALWAYS do this first)
+cd ~/mars_ws && git checkout main && git pull
+
+# 2. Make a branch for your change
+git checkout -b sim/<short-name>             # e.g. sim/add-mountains
+
+# 3. Edit files, then test
+colcon build --symlink-install && source install/setup.bash
+ros2 launch mars_sim sim.launch.py           # check it opens with no red errors in the terminal
+
+# 4. Save and upload your branch
+git add -A
+git commit -m "Add two mountains east of the crater"
+git push -u origin sim/<short-name>
+```
+**Step 5:** On GitHub, click **Compare & pull request**. Write what you changed, add a screenshot of Gazebo if it changes how things look, then click **Create pull request**. After a quick check by someone else, click **Merge**.
+
+### Rules to avoid clashes
+
+1. **Pull before you start, push when you stop.** Don't sit on changes for days.
+2. **One person per file at a time.** Tell the team in the group chat: "I'm editing `mars_crater.sdf` today."
+3. **Want to experiment?** Copy the world instead of changing the shared one:
+   ```bash
+   cp src/mars_sim/worlds/mars_crater.sdf src/mars_sim/worlds/mars_crater_<yourname>.sdf
+   colcon build --symlink-install && source install/setup.bash
+   ros2 launch mars_sim sim.launch.py world:=mars_crater_<yourname>.sdf
+   ```
+4. **Never hand-edit `crater.obj`.** It is generated. Change `generate_crater.py`, run it, and commit **both** files together:
+   ```bash
+   cd ~/mars_ws/src/mars_sim && python3 scripts/generate_crater.py && cd ~/mars_ws
+   ```
+5. **Keep names stable.** Other packages depend on the entity names (`primary_rover`, `drone_1`…`drone_4`, `base_station`), the world name `mars_world`, and the topics. If you change one, update section 7 of this README in the same pull request.
+6. **Changed positions or the crater shape?** Update the table in section 7 so everyone knows the new numbers.
+
+### If git says "conflict"
+
+This means you and a teammate changed the same lines.
+```bash
+git pull                       # shows which files conflict
+```
+1. Open each conflicting file. You'll see blocks like this:
+   ```
+   <<<<<<< HEAD
+   <pose>8 0 3 0 0 0</pose>        ← your version
+   =======
+   <pose>9 0 3 0 0 0</pose>        ← their version
+   >>>>>>> origin/main
+   ```
+2. Keep the right lines, and delete the `<<<<<<<`, `=======` and `>>>>>>>` marker lines.
+3. Rebuild and test, then finish with:
+   ```bash
+   git add -A && git commit -m "Merge latest main" && git push
+   ```
+4. Not sure which version is right? Ask the person who made the other change before choosing.
+
+## 9. Interfaces
 
 **Available now (Gazebo topics):**
 
@@ -242,7 +364,7 @@ cd ~/mars_ws && colcon build --symlink-install
 
 **Network side:** all mesh traffic uses the **Zenoh keys** and **packet format** in [section 3](#3-communication-architecture-zenoh). The GUI only needs Zenoh, not ROS 2.
 
-## 9. Roadmap
+## 10. Roadmap
 
 - [x] **1. World:** crater terrain, rover, 4 drones, base station
 - [ ] **2. ROS bridge:** rover and drone topics in ROS 2; drones can move
@@ -254,7 +376,9 @@ cd ~/mars_ws && colcon build --symlink-install
 - [ ] **8. Base station GUI:** map, live links, packet route animation, telemetry, failure stats, command box
 - [ ] **9. Demo:** rover enters crater → link lost → drones deploy → route forms → data reaches base → corruption switched on (CRC + retransmit keep data correct) → a drone fails → re-route
 
-## 10. How to contribute
+## 11. How to contribute
+
+> Working on the Gazebo world or models? Follow **section 8**. The steps below are for any package.
 
 1. **Get the latest code** before you start:
    ```bash
@@ -280,16 +404,16 @@ cd ~/mars_ws && colcon build --symlink-install
 **Rules:**
 - Use a branch + Pull Request for code changes (small doc fixes can go straight to `main`).
 - Don't commit `build/`, `install/`, `log/` (already in `.gitignore`).
-- Keep topic names, Zenoh keys and the packet format exactly as in sections 3 and 8. Change them only after the team agrees, then update this README.
+- Keep topic names, Zenoh keys and the packet format exactly as in sections 3 and 9. Change them only after the team agrees, then update this README.
 - Import shared names and the packet format from `mesh_common`. Don't copy them into your own package.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 | Problem | Fix |
 |---|---|
 | `curl: (60) SSL certificate problem: self-signed certificate` (on campus Wi-Fi) | The campus firewall intercepts HTTPS. Use a phone hotspot, or install the campus CA certificate (`sudo update-ca-certificates`). |
-| `gz: command not found` | Install Gazebo Harmonic (section 4), then open a new terminal. |
-| `error: externally-managed-environment` when installing Zenoh | Add `--break-system-packages` to the `pip install` command (section 4). |
+| `gz: command not found` | Install Gazebo Harmonic (section 4, step 4), then open a new terminal. |
+| `error: externally-managed-environment` when installing Zenoh | Add `--break-system-packages` to the `pip install` command (section 4, step 5). |
 | `ModuleNotFoundError: No module named 'zenoh'` | Install it: `pip install --break-system-packages eclipse-zenoh`. |
 | `zenoh.ZError: ... tcp/[::]:0 ... Address family not supported` | IPv6 is off on your machine. Make Zenoh use IPv4: `cfg = zenoh.Config(); cfg.insert_json5("listen/endpoints", '["tcp/0.0.0.0:0"]'); session = zenoh.open(cfg)`. |
 | Zenoh nodes don't see each other | They must run on the same network. Check a firewall isn't blocking UDP multicast, or connect them explicitly to one Zenoh router. |
