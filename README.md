@@ -186,7 +186,6 @@ Other world: `ros2 launch mars_sim sim.launch.py world:=empty_mars.sdf` (flat te
 mars_ws/                          ← repository root = ROS 2 workspace
 ├── README.md                     ← this file
 ├── ERRORS.md                     ← problems we hit + how we fixed them
-├── CLAUDE.md                     ← project notes for the Claude Code AI assistant (optional)
 ├── docs/                         ← guides and images
 └── src/
     ├── mars_sim/                 ← simulation package ✅
