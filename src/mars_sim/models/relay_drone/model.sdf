@@ -1,0 +1,51 @@
+<?xml version="1.0" ?>
+<!--
+  Relay drone: a quadcopter shape with a radio antenna.
+  STATIC for now = it hovers exactly where you place it (no physics, no falling).
+  To move one while the sim runs, use the set_pose service (command in the README / chat).
+  (XML comments can't contain two dashes in a row, so the command isn't written here.)
+  Real flying (velocity control) comes in a later step.
+-->
+<sdf version="1.9">
+  <model name="relay_drone">
+    <static>true</static>
+    <link name="body">
+      <collision name="collision">
+        <geometry><box><size>0.9 0.9 0.15</size></box></geometry>
+      </collision>
+
+      <visual name="core">                               <!-- centre body -->
+        <geometry><box><size>0.35 0.35 0.12</size></box></geometry>
+        <material><ambient>0.9 0.9 0.9 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse></material>
+      </visual>
+      <visual name="arm_a">                              <!-- two crossed arms (X shape) -->
+        <pose>0 0 0 0 0 0.7854</pose>
+        <geometry><box><size>1.0 0.05 0.04</size></box></geometry>
+        <material><ambient>0.2 0.2 0.2 1</ambient><diffuse>0.25 0.25 0.25 1</diffuse></material>
+      </visual>
+      <visual name="arm_b">
+        <pose>0 0 0 0 0 -0.7854</pose>
+        <geometry><box><size>1.0 0.05 0.04</size></box></geometry>
+        <material><ambient>0.2 0.2 0.2 1</ambient><diffuse>0.25 0.25 0.25 1</diffuse></material>
+      </visual>
+      <!-- 4 rotor discs at the arm ends -->
+      <visual name="rotor_1"><pose>0.35 0.35 0.04 0 0 0</pose>
+        <geometry><cylinder><radius>0.16</radius><length>0.01</length></cylinder></geometry>
+        <material><ambient>1 0.45 0 1</ambient><diffuse>1 0.45 0 1</diffuse></material></visual>
+      <visual name="rotor_2"><pose>0.35 -0.35 0.04 0 0 0</pose>
+        <geometry><cylinder><radius>0.16</radius><length>0.01</length></cylinder></geometry>
+        <material><ambient>1 0.45 0 1</ambient><diffuse>1 0.45 0 1</diffuse></material></visual>
+      <visual name="rotor_3"><pose>-0.35 0.35 0.04 0 0 0</pose>
+        <geometry><cylinder><radius>0.16</radius><length>0.01</length></cylinder></geometry>
+        <material><ambient>1 0.45 0 1</ambient><diffuse>1 0.45 0 1</diffuse></material></visual>
+      <visual name="rotor_4"><pose>-0.35 -0.35 0.04 0 0 0</pose>
+        <geometry><cylinder><radius>0.16</radius><length>0.01</length></cylinder></geometry>
+        <material><ambient>1 0.45 0 1</ambient><diffuse>1 0.45 0 1</diffuse></material></visual>
+      <visual name="antenna">                            <!-- radio antenna pointing down -->
+        <pose>0 0 -0.2 0 0 0</pose>
+        <geometry><cylinder><radius>0.015</radius><length>0.3</length></cylinder></geometry>
+        <material><ambient>0.1 0.8 0.2 1</ambient><diffuse>0.1 0.9 0.2 1</diffuse></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

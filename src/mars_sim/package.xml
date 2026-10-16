@@ -4,7 +4,7 @@
   <name>mars_sim</name>
   <version>0.0.1</version>
   <description>Gazebo simulation for the Mars rover relay-mesh project</description>
-  <maintainer email="you@example.com">Your Name</maintainer>
+  <maintainer email="sashang256@gmail.com">sashang25</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

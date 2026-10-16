@@ -1,0 +1,52 @@
+<?xml version="1.0" ?>
+<!--
+  Base station (talks to Earth / the rovers). Static building.
+  Model origin = ground level at the centre of the pad. Antenna top is ~10 m above the ground.
+-->
+<sdf version="1.9">
+  <model name="base_station">
+    <static>true</static>
+    <link name="base">
+
+      <collision name="pad_collision">                       <!-- landing pad -->
+        <pose>0 0 0.15 0 0 0</pose>
+        <geometry><box><size>10 10 0.3</size></box></geometry>
+      </collision>
+      <visual name="pad">
+        <pose>0 0 0.15 0 0 0</pose>
+        <geometry><box><size>10 10 0.3</size></box></geometry>
+        <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+      </visual>
+
+      <collision name="hut_collision">                       <!-- habitat / equipment hut -->
+        <pose>-2 -2 1.55 0 0 0</pose>
+        <geometry><box><size>4 3 2.5</size></box></geometry>
+      </collision>
+      <visual name="hut">
+        <pose>-2 -2 1.55 0 0 0</pose>
+        <geometry><box><size>4 3 2.5</size></box></geometry>
+        <material><ambient>0.85 0.85 0.8 1</ambient><diffuse>0.9 0.9 0.85 1</diffuse></material>
+      </visual>
+
+      <collision name="mast_collision">                      <!-- tall antenna mast -->
+        <pose>2.5 2.5 5.3 0 0 0</pose>
+        <geometry><cylinder><radius>0.2</radius><length>10</length></cylinder></geometry>
+      </collision>
+      <visual name="mast">
+        <pose>2.5 2.5 5.3 0 0 0</pose>
+        <geometry><cylinder><radius>0.2</radius><length>10</length></cylinder></geometry>
+        <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material>
+      </visual>
+      <visual name="dish">                                   <!-- dish (flattened disc, tilted up) -->
+        <pose>2.5 2.5 10.3 0 -0.6 3.14</pose>
+        <geometry><cylinder><radius>1.2</radius><length>0.1</length></cylinder></geometry>
+        <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>1 1 1 1</diffuse></material>
+      </visual>
+      <visual name="beacon">                                 <!-- red beacon so you can spot it from far -->
+        <pose>2.5 2.5 10.8 0 0 0</pose>
+        <geometry><sphere><radius>0.3</radius></sphere></geometry>
+        <material><ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse><emissive>0.8 0 0 1</emissive></material>
+      </visual>
+    </link>
+  </model>
+</sdf>
