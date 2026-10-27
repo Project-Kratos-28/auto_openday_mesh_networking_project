@@ -7,16 +7,10 @@ import zenoh
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QFrame, QSplitter, QPushButton,
-    QDoubleSpinBox, QSlider, QTextEdit
+    QDoubleSpinBox, QSlider, QSizePolicy
 )
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal, Qt
 from PyQt6.QtGui import QColor, QFont, QImage, QPalette, QPixmap
-
-import pyqtgraph as pg
-
-# Configure global PyQtGraph style
-pg.setConfigOption('background', '#121212')
-pg.setConfigOption('foreground', '#E0E0E0')
 
 
 # ------------------------------------------------------------------------------
@@ -145,15 +139,6 @@ QSlider::handle:horizontal:disabled {
 QSlider::sub-page:horizontal:disabled {
     background: #3A414C;
 }
-QTextEdit {
-    background-color: #0B0D11;
-    color: #FF8A80;
-    border: 1px solid #343B47;
-    border-radius: 6px;
-    padding: 6px;
-    selection-background-color: #00A9C2;
-    selection-color: #071116;
-}
 QSplitter::handle {
     background-color: #1A1E25;
 }
@@ -169,19 +154,6 @@ QToolTip {
     color: #F4F7FB;
     border: 1px solid #00D3F2;
     padding: 4px;
-}
-QScrollBar:vertical {
-    background: #15191F;
-    width: 10px;
-    margin: 0;
-}
-QScrollBar::handle:vertical {
-    background: #3D4755;
-    min-height: 24px;
-    border-radius: 5px;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0;
 }
 """
 
@@ -227,7 +199,6 @@ def open_zenoh_session() -> zenoh.Session:
 # ------------------------------------------------------------------------------
 class ZenohListenerThread(QThread):
     odom_signal = pyqtSignal(dict)
-    event_signal = pyqtSignal(dict)
     error_signal = pyqtSignal(str)
 
     def __init__(self):
@@ -245,9 +216,6 @@ class ZenohListenerThread(QThread):
                 ),
                 self.session.declare_subscriber(
                     "mesh/base/telemetry", lambda sample: self._emit_json(sample, self.odom_signal)
-                ),
-                self.session.declare_subscriber(
-                    "mesh/failure/events", lambda sample: self._emit_json(sample, self.event_signal)
                 ),
             ]
             self.exec()
@@ -340,13 +308,11 @@ class CameraFeedWidget(QGroupBox):
 
 
 # ------------------------------------------------------------------------------
-# 3. Sub-Window 1: Odometry & Trajectory Map Widget
+# 3. Sub-Window 1: Rover Telemetry
 # ------------------------------------------------------------------------------
 class OdometryWidget(QGroupBox):
-    waypoint_picked = pyqtSignal(float, float)
-
     def __init__(self):
-        super().__init__("Sub-Window 1: Rover Odometry and Trajectory Map")
+        super().__init__("Sub-Window 1: Rover Telemetry")
         self.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -365,9 +331,14 @@ class OdometryWidget(QGroupBox):
         """)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
-        # Telemetry Text Cards Grid
+        # Compact telemetry strip (the live path graph was removed).
         grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+
         self.lbl_x = self._create_card("X Position", "0.00 m")
         self.lbl_y = self._create_card("Y Position", "0.00 m")
         self.lbl_z = self._create_card("Z Position", "0.00 m")
@@ -375,46 +346,33 @@ class OdometryWidget(QGroupBox):
         self.lbl_speed = self._create_card("Linear Speed", "0.00 m/s")
         self.lbl_hops = self._create_card("Active Route", "Direct")
 
-        grid.addWidget(self.lbl_x['box'], 0, 0)
-        grid.addWidget(self.lbl_y['box'], 0, 1)
-        grid.addWidget(self.lbl_z['box'], 0, 2)
-        grid.addWidget(self.lbl_yaw['box'], 1, 0)
-        grid.addWidget(self.lbl_speed['box'], 1, 1)
-        grid.addWidget(self.lbl_hops['box'], 1, 2)
-
+        for column, card in enumerate((
+            self.lbl_x, self.lbl_y, self.lbl_z,
+            self.lbl_yaw, self.lbl_speed, self.lbl_hops,
+        )):
+            grid.addWidget(card['box'], 0, column)
+            grid.setColumnStretch(column, 1)
         layout.addLayout(grid)
 
-        # 2D PyQtGraph Map
-        self.plot_widget = pg.PlotWidget(title="Live Path Trail (Double-Click Map to Pick Waypoint)")
-        self.plot_widget.setLabel('bottom', "X (m)")
-        self.plot_widget.setLabel('left', "Y (m)")
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        self.plot_widget.setAspectLocked(True)
-
-        self.path_curve = self.plot_widget.plot(pen=pg.mkPen(color='#00FF66', width=2))
-        self.rover_marker = self.plot_widget.plot(
-            pen=None, symbol='o', symbolSize=12, symbolBrush=pg.mkBrush('#FF3366')
-        )
-
-        # Double-click listener for map clicking
-        self.plot_widget.scene().sigMouseClicked.connect(self._on_map_clicked)
-        layout.addWidget(self.plot_widget, stretch=1)
-
-        self.x_history = []
-        self.y_history = []
         self.last_time = None
         self.last_pos = None
 
     def _create_card(self, title: str, default_val: str) -> dict:
         box = QFrame()
-        box.setStyleSheet("background-color: #242424; border-radius: 4px; padding: 4px;")
+        box.setMinimumHeight(58)
+        box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        box.setStyleSheet(
+            "background-color: #20252D; border: 1px solid #2E3540;"
+            " border-radius: 6px; padding: 6px;"
+        )
         l = QVBoxLayout(box)
-        l.setContentsMargins(4, 4, 4, 4)
+        l.setContentsMargins(8, 6, 8, 6)
+        l.setSpacing(2)
 
         t_lbl = QLabel(title)
-        t_lbl.setStyleSheet("color: #888888; font-size: 10px; font-weight: normal;")
+        t_lbl.setStyleSheet("color: #9AA7B8; font-size: 10px; font-weight: normal;")
         v_lbl = QLabel(default_val)
-        v_lbl.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: bold;")
+        v_lbl.setStyleSheet("color: #FFFFFF; font-size: 14px; font-weight: bold;")
 
         l.addWidget(t_lbl)
         l.addWidget(v_lbl)
@@ -488,24 +446,6 @@ class OdometryWidget(QGroupBox):
 
         self.last_pos = (x, y)
         self.last_time = curr_time
-        self.x_history.append(x)
-        self.y_history.append(y)
-        # Bound history and plotting costs during long simulation runs.
-        if len(self.x_history) > 5000:
-            del self.x_history[:1000]
-            del self.y_history[:1000]
-        self.path_curve.setData(self.x_history, self.y_history)
-        self.rover_marker.setData([x], [y])
-
-    def _on_map_clicked(self, event):
-        if event.double():
-            pos = event.scenePos()
-            view_box = self.plot_widget.plotItem.vb
-            if not view_box.sceneBoundingRect().contains(pos):
-                return
-            mouse_point = view_box.mapSceneToView(pos)
-            if math.isfinite(mouse_point.x()) and math.isfinite(mouse_point.y()):
-                self.waypoint_picked.emit(mouse_point.x(), mouse_point.y())
 
 
 # ------------------------------------------------------------------------------
@@ -641,6 +581,8 @@ class ControlPanelWidget(QGroupBox):
 
         self._sync_slider_labels()
 
+        layout.addStretch(1)
+
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setStyleSheet("color: #343B47;")
@@ -650,34 +592,44 @@ class ControlPanelWidget(QGroupBox):
         wp_title = QLabel("Waypoint Target Dispatcher")
         wp_title.setStyleSheet("font-weight: bold; color: #E8ECF1;")
         layout.addWidget(wp_title)
-        wp_layout = QHBoxLayout()
 
-        wp_layout.addWidget(QLabel("Target X:"))
+        # Two-row layout: coordinates on top, full-width action button below.
+        # The full-width button guarantees its label never gets clipped.
+        wp_layout = QGridLayout()
+        wp_layout.setHorizontalSpacing(8)
+        wp_layout.setVerticalSpacing(8)
+
+        wp_layout.addWidget(QLabel("Target X:"), 0, 0)
         self.spin_x = QDoubleSpinBox()
         self.spin_x.setRange(-235.0, 235.0)
         self.spin_x.setValue(0.0)
         self.spin_x.setDecimals(2)
         self.spin_x.setSuffix(" m")
         self.spin_x.setMinimumWidth(95)
-        wp_layout.addWidget(self.spin_x)
+        wp_layout.addWidget(self.spin_x, 0, 1)
 
-        wp_layout.addWidget(QLabel("Target Y:"))
+        wp_layout.addWidget(QLabel("Target Y:"), 0, 2)
         self.spin_y = QDoubleSpinBox()
         self.spin_y.setRange(-235.0, 235.0)
         self.spin_y.setValue(0.0)
         self.spin_y.setDecimals(2)
         self.spin_y.setSuffix(" m")
         self.spin_y.setMinimumWidth(95)
-        wp_layout.addWidget(self.spin_y)
+        wp_layout.addWidget(self.spin_y, 0, 3)
+
+        wp_layout.setColumnStretch(1, 1)
+        wp_layout.setColumnStretch(3, 1)
 
         self.btn_send_wp = QPushButton("Send Waypoint")
+        self.btn_send_wp.setMinimumHeight(36)
+        self.btn_send_wp.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_send_wp.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_send_wp.setStyleSheet(
             "background-color: #00796B; color: #FFFFFF; font-weight: bold;"
             " border: 1px solid #26A69A; border-radius: 6px; padding: 6px 12px;"
         )
         self.btn_send_wp.clicked.connect(self.send_waypoint)
-        wp_layout.addWidget(self.btn_send_wp)
+        wp_layout.addWidget(self.btn_send_wp, 1, 0, 1, 4)
 
         layout.addLayout(wp_layout)
 
@@ -797,70 +749,8 @@ class ControlPanelWidget(QGroupBox):
         self._publish_packet("mesh/base/cmd", wp_pkt)
         print(f"[ControlPanel] Dispatched Waypoint -> ({self.spin_x.value()}, {self.spin_y.value()})")
 
-    def set_waypoint_coords(self, x: float, y: float):
-        self.spin_x.setValue(x)
-        self.spin_y.setValue(y)
-
-
 # ------------------------------------------------------------------------------
-# 5. Sub-Window 5: Failure Injection Controller & Event Console
-# ------------------------------------------------------------------------------
-class FailureControlWidget(QGroupBox):
-    def __init__(self, zenoh_session: zenoh.Session):
-        super().__init__("Sub-Window 5: Failure Injector and Event Log")
-        self.session = zenoh_session
-
-        self.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                border: 1px solid #343B47;
-                border-radius: 8px;
-                margin-top: 14px;
-                padding-top: 8px;
-                background-color: #1A1E25;
-                color: #FF5252;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 2px 6px;
-            }
-        """)
-
-        layout = QVBoxLayout(self)
-
-        # The failure-injection consumer is still a planned package. Make this
-        # explicit instead of presenting a slider that has no effect.
-        self.failure_status = QLabel(
-            "Failure injection is inactive until the failure_injection node is implemented."
-        )
-        self.failure_status.setWordWrap(True)
-        self.failure_status.setStyleSheet("color: #FFCC00; font-size: 11px;")
-        layout.addWidget(self.failure_status)
-        self.slider_drop = QSlider(Qt.Orientation.Horizontal)
-        self.slider_drop.setRange(0, 100)
-        self.slider_drop.setEnabled(False)
-        self.slider_drop.setToolTip("Inactive: no failure-injection consumer exists yet.")
-        layout.addWidget(self.slider_drop)
-
-        # Event Console
-        layout.addWidget(QLabel("<b>Network Failure Event Stream:</b>"))
-        self.log_console = QTextEdit()
-        self.log_console.setReadOnly(True)
-        self.log_console.setStyleSheet("background-color: #080808; color: #FF5252; font-family: monospace;")
-        layout.addWidget(self.log_console, stretch=1)
-
-    def _update_failures(self):
-        val = self.slider_drop.value() / 100.0
-        msg = {"drop_probability": val}
-        self.session.put("mesh/failure/control", json.dumps(msg))
-
-    def log_event(self, data: dict):
-        self.log_console.append(f"[EVENT] {json.dumps(data)}")
-
-
-# ------------------------------------------------------------------------------
-# 6. Main Dashboard Window Layout
+# 5. Main Dashboard Window Layout
 # ------------------------------------------------------------------------------
 class BaseStationMainWindow(QMainWindow):
     def __init__(self):
@@ -874,34 +764,26 @@ class BaseStationMainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(8)
 
         # Dashboard Header
         header = QLabel("MARS ROVER RELAY MESH — GROUND STATION CONTROL CONSOLE")
         header.setStyleSheet("color: #00E5FF; font-size: 16px; font-weight: bold; padding: 4px;")
         main_layout.addWidget(header)
 
-        # Splitter dividing Left (Odometry + Control) and Right (Cameras + Failure Injection)
+        # Top strip: rover telemetry across the full width
+        self.odom_widget = OdometryWidget()
+        main_layout.addWidget(self.odom_widget)
+
+        # Lower area: camera feeds on the left, drive controls on the right
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setChildrenCollapsible(False)
 
         # LEFT COLUMN
         left_container = QWidget()
         left_layout = QVBoxLayout(left_container)
         left_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.odom_widget = OdometryWidget()
-        self.control_widget = ControlPanelWidget(self.zenoh_session)
-
-        # Connect map double-click picking to waypoint spinboxes
-        self.odom_widget.waypoint_picked.connect(self.control_widget.set_waypoint_coords)
-
-        left_layout.addWidget(self.odom_widget, stretch=2)
-        left_layout.addWidget(self.control_widget, stretch=1)
-        main_splitter.addWidget(left_container)
-
-        # RIGHT COLUMN
-        right_container = QWidget()
-        right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(0, 0, 0, 0)
 
         # Dual Camera Feeds
         self.rover_cam_widget = CameraFeedWidget(
@@ -916,25 +798,28 @@ class BaseStationMainWindow(QMainWindow):
         )
         self.base_cam_widget.show_placeholder("Sub-Window 3\n[ Received Mesh Video Reserved ]")
 
-        self.failure_widget = FailureControlWidget(self.zenoh_session)
-
         cam_splitter = QSplitter(Qt.Orientation.Horizontal)
+        cam_splitter.setChildrenCollapsible(False)
         cam_splitter.addWidget(self.rover_cam_widget)
         cam_splitter.addWidget(self.base_cam_widget)
+        cam_splitter.setSizes([440, 440])
 
-        right_layout.addWidget(cam_splitter, stretch=1)
-        right_layout.addWidget(self.failure_widget, stretch=1)
+        left_layout.addWidget(cam_splitter)
+        main_splitter.addWidget(left_container)
 
-        main_splitter.addWidget(right_container)
+        # RIGHT COLUMN: drive controls where failure injection used to sit
+        self.control_widget = ControlPanelWidget(self.zenoh_session)
+        self.control_widget.setMinimumWidth(420)
+        main_splitter.addWidget(self.control_widget)
 
-        # Balance left and right view splits
-        main_splitter.setSizes([650, 730])
-        main_layout.addWidget(main_splitter)
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 0)
+        main_splitter.setSizes([870, 480])
+        main_layout.addWidget(main_splitter, stretch=1)
 
         # Start Zenoh Listener Thread
         self.listener_thread = ZenohListenerThread()
         self.listener_thread.odom_signal.connect(self.odom_widget.process_odometry)
-        self.listener_thread.event_signal.connect(self.failure_widget.log_event)
         self.listener_thread.error_signal.connect(self.statusBar().showMessage)
         self.listener_thread.start()
 
