@@ -1,103 +1,73 @@
 #!/usr/bin/env python3
-"""
-generate_crater.py - makes the Mars crater terrain as a 3D mesh (OBJ file) for Gazebo.
+"""Generate the crater terrain mesh: models/mars_crater/meshes/crater.obj
 
-Run from the package folder:   python3 scripts/generate_crater.py
-Writes:                        models/mars_crater/meshes/crater.obj
-Then rebuild the workspace:    colcon build --symlink-install
-
-Coordinates (metres):
-  - crater centre = (0, 0); crater FLOOR is at z = 0 (so the rover spawns at the origin)
-  - the flat plain outside the crater is at z = DEPTH (25 m)
-  - the rim sticks up RIM_HEIGHT (8 m) above the plain
-Change the numbers below to resize the crater, then re-run.
+Change the numbers below, then run (from src/mars_sim):
+    python3 scripts/generate_crater.py
+    python3 scripts/build_relay_world.py      # re-places rover/bases on the new ground
+    cd ~/mars_ws && colcon build --symlink-install
+Never hand-edit crater.obj. Commit this script AND crater.obj together.
 """
+import math
 import os
-import numpy as np
 
-# ---------------- settings you can change ----------------
-SIZE = 480.0          # terrain is SIZE x SIZE metres, centred on the crater
-GRID = 161            # points per side (more = smoother but heavier). 161 -> 3 m spacing
-RIM_RADIUS = 100.0    # crater radius to the top of the rim (m)  -> 200 m wide crater
-DEPTH = 25.0          # floor depth below the outside plain (m)
-RIM_HEIGHT = 8.0      # rim height above the plain (m)
-EJECTA_RADIUS = 170.0 # where the raised ground around the rim fades back to the plain (m)
-BUMPS = 0.4           # height of small random Mars bumps (m)
-BASE_XY = (200.0, 0.0)  # base station spot: kept flat so the station sits level
-SEED = 7              # change for different bumps
-# ----------------------------------------------------------
+# ------------------------------------------------------------ terrain numbers (metres)
+# Small "demo scale": everything fits on screen. The models keep their real size
+# (rover 1 m, drone 1 m, base station 10 x 10 m pad with a 10 m mast).
+SIZE_X = 110.0          # terrain length (x: -55 .. +55), long axis = base A -> base B
+SIZE_Y = 60.0           # terrain width  (y: -30 .. +30)
+SPACING = 0.5           # distance between mesh points (bigger = faster sim, rougher ground)
+FLOOR_RADIUS = 3.0      # flat crater floor
+RIM_RADIUS = 18.0       # top of the rim (crater is 36 m wide)
+RIM_HEIGHT = 6.0        # rim top height (floor is z = 0); deep enough that the 10 m base
+                        # mast can't see the crater floor over the rim
+PLAIN_HEIGHT = 1.5      # height of the plain outside the crater
+OUTER_FALL = 8.0        # how quickly the rim falls to the plain outside
+BUMPS = 0.08            # small ground bumps (m); 0 = smooth
+BUMP_SCALE = 7.0        # bump size scale (bigger = wider bumps)
 
-
-def smoothstep(a, b, x):
-    """0 when x<=a, 1 when x>=b, smooth S-curve in between."""
-    t = np.clip((x - a) / (b - a), 0.0, 1.0)
-    return t * t * (3 - 2 * t)
-
-
-def crater_height(x, y):
-    """Height of the crater shape (no bumps), measured from the PLAIN level."""
-    r = np.hypot(x, y)
-    inside = -DEPTH + (DEPTH + RIM_HEIGHT) * (r / RIM_RADIUS) ** 2.5          # bowl rising to the rim
-    outside = RIM_HEIGHT * (1 - smoothstep(RIM_RADIUS, EJECTA_RADIUS, r))     # rim slope fading to plain
-    return np.where(r <= RIM_RADIUS, inside, outside)
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                   "models", "mars_crater", "meshes", "crater.obj")
 
 
-def bumps(x, y):
-    """Small rolling bumps, flattened near the rover spawn and the base station."""
-    rng = np.random.default_rng(SEED)
-    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-    z = np.zeros(np.shape(x))
-    for _ in range(12):                                   # add 12 random gentle waves
-        kx, ky = rng.uniform(-1, 1, 2) * 2 * np.pi / rng.uniform(15, 60)
-        z += np.sin(kx * x + ky * y + rng.uniform(0, 2 * np.pi))
-    z *= BUMPS / 3.0
-    z *= smoothstep(12, 30, np.hypot(x, y))                                   # flat around rover
-    z *= smoothstep(15, 35, np.hypot(x - BASE_XY[0], y - BASE_XY[1]))         # flat around base
-    return z
-
-
-def terrain_z(x, y):
-    """Final height used by Gazebo (crater floor = 0)."""
-    return crater_height(x, y) + DEPTH + bumps(x, y)
+def height(x, y):
+    """Ground height at (x, y). build_relay_world.py imports this too."""
+    r = math.hypot(x, y)
+    if r <= RIM_RADIUS:                                   # inside: floor -> rim, smooth S-curve
+        t = min(1.0, max(0.0, (r - FLOOR_RADIUS) / (RIM_RADIUS - FLOOR_RADIUS)))
+        h = RIM_HEIGHT * t * t * (3 - 2 * t)
+    else:                                                 # outside: rim -> plain
+        h = PLAIN_HEIGHT + (RIM_HEIGHT - PLAIN_HEIGHT) * math.exp(-((r - RIM_RADIUS) / OUTER_FALL) ** 2)
+    u, v = x * 7.0 / BUMP_SCALE, y * 7.0 / BUMP_SCALE
+    h += BUMPS * (math.sin(u * 0.9) * math.cos(v * 1.1) + 0.5 * math.sin(u * 0.27 + v * 0.4))
+    return h
 
 
 def main():
-    here = os.path.dirname(os.path.abspath(__file__))
-    out = os.path.join(here, '..', 'models', 'mars_crater', 'meshes', 'crater.obj')
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-
-    xs = np.linspace(-SIZE / 2, SIZE / 2, GRID)
-    X, Y = np.meshgrid(xs, xs, indexing='ij')             # X[i, j], Y[i, j]
-    Z = terrain_z(X, Y)
-
-    # surface normals (for smooth lighting) from the slope in x and y
-    step = xs[1] - xs[0]
-    dzdx, dzdy = np.gradient(Z, step, step)
-    N = np.dstack([-dzdx, -dzdy, np.ones_like(Z)])
-    N /= np.linalg.norm(N, axis=2, keepdims=True)
-
-    with open(out, 'w') as f:
-        f.write('# Mars crater terrain, made by generate_crater.py\n')
-        f.write('o crater\n')
-        for i in range(GRID):
-            for j in range(GRID):
-                f.write(f'v {X[i, j]:.2f} {Y[i, j]:.2f} {Z[i, j]:.3f}\n')
-        for i in range(GRID):
-            for j in range(GRID):
-                n = N[i, j]
-                f.write(f'vn {n[0]:.4f} {n[1]:.4f} {n[2]:.4f}\n')
-        idx = lambda i, j: i * GRID + j + 1               # OBJ counts from 1
-        for i in range(GRID - 1):
-            for j in range(GRID - 1):
-                a, b, c, d = idx(i, j), idx(i + 1, j), idx(i + 1, j + 1), idx(i, j + 1)
-                f.write(f'f {a}//{a} {b}//{b} {c}//{c}\n')   # two triangles per square,
-                f.write(f'f {a}//{a} {c}//{c} {d}//{d}\n')   # counter-clockwise = facing up
-
-    print(f'Wrote {out}')
-    print(f'  crater floor z = {terrain_z(np.array(0.0), np.array(0.0)):.2f} m, '
-          f'rim top z = {DEPTH + RIM_HEIGHT:.1f} m, plain z = {DEPTH:.1f} m')
-    print(f'  base station ground z = {terrain_z(np.array(BASE_XY[0]), np.array(BASE_XY[1])):.2f} m')
+    nx = int(round(SIZE_X / SPACING)) + 1
+    ny = int(round(SIZE_Y / SPACING)) + 1
+    xs = [-SIZE_X / 2 + i * SPACING for i in range(nx)]
+    ys = [-SIZE_Y / 2 + j * SPACING for j in range(ny)]
+    H = [[height(x, y) for y in ys] for x in xs]
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    with open(OUT, "w") as f:
+        f.write(f"# generated by generate_crater.py ({nx}x{ny} points) - do not edit by hand\n")
+        for i, x in enumerate(xs):                        # vertices, z = up
+            for j, y in enumerate(ys):
+                f.write(f"v {x:.2f} {y:.2f} {H[i][j]:.3f}\n")
+        for i in range(nx):                               # normals (for nice lighting)
+            for j in range(ny):
+                dzdx = (H[min(i + 1, nx - 1)][j] - H[max(i - 1, 0)][j]) / (2 * SPACING)
+                dzdy = (H[i][min(j + 1, ny - 1)] - H[i][max(j - 1, 0)]) / (2 * SPACING)
+                n = math.sqrt(dzdx * dzdx + dzdy * dzdy + 1)
+                f.write(f"vn {-dzdx / n:.4f} {-dzdy / n:.4f} {1 / n:.4f}\n")
+        for i in range(nx - 1):                           # 2 triangles per grid square
+            for j in range(ny - 1):
+                a = i * ny + j + 1
+                b, c, d = a + ny, a + 1, a + ny + 1
+                f.write(f"f {a}//{a} {b}//{b} {d}//{d}\nf {a}//{a} {d}//{d} {c}//{c}\n")
+    print(f"wrote {OUT}: {nx}x{ny} points, {2 * (nx - 1) * (ny - 1)} triangles, "
+          f"crater {2 * RIM_RADIUS:.0f} m wide and {RIM_HEIGHT:.0f} m deep, terrain {SIZE_X:.0f} x {SIZE_Y:.0f} m")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,0 +1,195 @@
+"""Self-test of the relay demo WITHOUT Gazebo (fake rover), about 3 minutes.
+
+  ros2 run mesh_protocol selftest
+
+Starts everything on a separate Zenoh port (so it doesn't disturb a running sim), with the
+mesh OFF like a normal start, and drives the fake rover fast (2.5 m/s). Checks:
+  1. start (mesh OFF): base A talks to the rover directly, base B gets nothing
+  2. mesh OFF, rover drives into the crater -> base A loses it, nothing deploys
+  3. toggle ON -> all 4 drones deploy, base A connected again, base B receives odometry
+  4. rover drives on to base B -> odometry flows the whole way, no gaps
+  5. second journey with the mesh ON from the start -> base B gets odometry from the
+     first second to the end, base A never loses the rover
+  6. the GUI toggle works (if PyQt6 is installed)
+"""
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+PORT = "tcp/127.0.0.1:7457"
+os.environ["MESH_HUB"] = PORT                          # must be set before mesh_common is imported
+
+from mesh_common import (UNITS, DRONES, START_XY, CRATER_RADIUS, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,  # noqa: E402
+                         KEY_COORD_CMD, KEY_MISSION, KEY_FAKE_POSE, KEY_FAKE_CMD_VEL, open_session)
+
+MAX_GAP = 1.5      # s: odometry is sent every 0.5 s, so a gap above this means the flow broke
+
+
+def main():
+    env = dict(os.environ, MESH_HUB=PORT, PYTHONUNBUFFERED="1")
+    log = open("/tmp/mesh_selftest.log", "w")
+    procs, results = [], []
+
+    def start(module, *args, extra_env=None):
+        p = subprocess.Popen([sys.executable, "-u", "-m", module, *args], env={**env, **(extra_env or {})},
+                             stdout=log, stderr=subprocess.STDOUT)
+        procs.append(p)
+        return p
+
+    def check(name, ok, detail=""):
+        results.append(bool(ok))
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name} {detail}", flush=True)
+
+    lock = threading.Lock()
+    st = {"acks": [], "odoms": [], "coord": None, "mission": None}
+
+    def rec(key):
+        def cb(x):
+            m = json.loads(x.payload.to_bytes())
+            m["rx"] = time.time()
+            with lock:
+                if key in ("acks", "odoms"):
+                    st[key].append(m)
+                else:
+                    st[key] = m
+        return cb
+
+    def times(key, t0, t1=None):
+        with lock:
+            return [m["rx"] for m in st[key] if m["rx"] >= t0 and (t1 is None or m["rx"] <= t1)]
+
+    def age(key):
+        with lock:
+            return time.time() - st[key][-1]["rx"] if st[key] else None
+
+    def coord(field):
+        with lock:
+            return (st["coord"] or {}).get(field)
+
+    def wait_for(cond, timeout):
+        end = time.time() + timeout
+        while time.time() < end:
+            if cond():
+                return True
+            time.sleep(0.2)
+        return cond()
+
+    def longest_gap(ts, t0, t1):
+        pts = [t0] + ts + [t1]
+        return max(b - a for a, b in zip(pts, pts[1:]))
+
+    try:
+        print("Starting link model, radio, injector, 7 mesh nodes, coordinator (mesh OFF, fake rover)...")
+        start("mesh_link_model.link_model", "--fake")
+        time.sleep(1.5)
+        start("mesh_link_model.radio_channel")
+        start("mesh_link_model.passthrough_injector")
+        for u in UNITS:
+            start("mesh_protocol.mesh_node", "--unit", u, *(["--fake"] if u == "rover" else []))
+        start("mesh_protocol.coordinator", "--fake", "--start", "off")
+        s = open_session()
+        subs = [s.declare_subscriber(KEY_ACKS_A, rec("acks")), s.declare_subscriber(KEY_ODOM_B, rec("odoms")),  # noqa
+                s.declare_subscriber(KEY_COORD_STATE, rec("coord")), s.declare_subscriber(KEY_MISSION, rec("mission"))]
+
+        print("\nTest 1: start, mesh OFF")
+        check("base A talks to the rover directly", wait_for(lambda: age("acks") is not None and age("acks") < 1.5, 20))
+        check("base B receives nothing", len(st["odoms"]) == 0)
+        check("coordinator: mode OFF, drones parked",
+              wait_for(lambda: coord("mode") == "off" and coord("state") == "STANDBY", 10))
+
+        print("\nTest 2: mesh OFF, rover drives into the crater")
+        mission = start("mesh_protocol.mission", "--fake", "--speed", "2.5")
+        ok = wait_for(lambda: age("acks") is not None and age("acks") > 4, 60)
+        with lock:
+            x = (st["mission"] or {}).get("x")
+        check("base A lost the rover inside the crater", ok and x is not None and -CRATER_RADIUS < x < CRATER_RADIUS, f"(x = {x} m)")
+        time.sleep(3)
+        check("mesh stays OFF: nothing deployed", coord("state") == "STANDBY" and not coord("relay"))
+        check("base B still receives nothing", len(st["odoms"]) == 0)
+
+        print("\nTest 3: toggle ON")
+        t_on = time.time()
+        s.put(KEY_COORD_CMD, "on")
+        ok = wait_for(lambda: coord("state") == "DEPLOYED", 5)
+        ch = coord("chains") or {}
+        used = sorted(ch.get("base_a", []) + ch.get("base_b", []))
+        check("drones deployed straight away", ok, f"({time.time() - t_on:.1f} s)")
+        check("all 4 drones in the relay chains", used == DRONES, f"({ch})")
+        check("base A connected again", wait_for(lambda: age("acks") is not None and age("acks") < 1.5, 8))
+        check("base B receives odometry", wait_for(lambda: age("odoms") is not None and age("odoms") < 1.5, 8))
+
+        print("\nTest 4: rover drives on to base B with the mesh ON")
+        t_flow = time.time()
+        ok = wait_for(lambda: mission.poll() is not None, 150)
+        t_end = time.time()
+        with lock:
+            mis = st["mission"] or {}
+        check("rover arrived next to base B", ok and mis.get("state") == "ARRIVED", f"(x = {mis.get('x')} m)")
+        g_b = longest_gap(times("odoms", t_flow), t_flow, t_end)
+        g_a = longest_gap(times("acks", t_flow), t_flow, t_end)
+        check("odometry reached base B the whole way", g_b < MAX_GAP, f"(longest gap {g_b:.1f} s)")
+        check("base A kept its connection", g_a < 2.5, f"(longest ACK gap {g_a:.1f} s)")
+
+        print("\nTest 5: second journey, mesh ON from the start")
+        s.put(KEY_COORD_CMD, "off")
+        wait_for(lambda: coord("state") == "STANDBY", 5)
+        time.sleep(1)
+        s.put(KEY_FAKE_CMD_VEL, json.dumps({"linear": 0, "angular": 0}))
+        s.put(KEY_FAKE_POSE, json.dumps({"unit": "rover", "pos": [*START_XY["rover"], 0.0], "yaw": 0.0}))
+        time.sleep(2)
+        s.put(KEY_COORD_CMD, "on")
+        wait_for(lambda: coord("state") == "DEPLOYED", 5)
+        ch = coord("chains") or {}
+        check("at the start: chains to both bases", "base_b" in ch and len(ch.get("base_b", [])) > 0, f"({ch})")
+        wait_for(lambda: age("odoms") is not None and age("odoms") < 1.0, 8)
+        t0 = time.time()
+        mission2 = start("mesh_protocol.mission", "--fake", "--speed", "2.5")
+        ok = wait_for(lambda: mission2.poll() is not None, 150)
+        t1 = time.time()
+        with lock:
+            mis = st["mission"] or {}
+        check("rover arrived again", ok and mis.get("state") == "ARRIVED")
+        g_b = longest_gap(times("odoms", t0), t0, t1)
+        g_a = longest_gap(times("acks", t0), t0, t1)
+        n_b = len(times("odoms", t0, t1))
+        check("base B got odometry from start to end", g_b < MAX_GAP, f"({n_b} msgs, longest gap {g_b:.1f} s)")
+        check("base A never lost the rover", g_a < 2.5, f"(longest ACK gap {g_a:.1f} s)")
+        check("no program crashed", all(p.poll() is None for p in procs if p not in (mission, mission2)))
+
+        print("\nTest 6: GUI toggle (PyQt6)")
+        try:
+            import PyQt6  # noqa: F401
+            import base_station_gui  # noqa: F401
+            have_gui = True
+        except Exception as e:
+            have_gui = False
+            print(f"  [SKIP] GUI not tested: {e}")
+        if have_gui:
+            r = subprocess.run([sys.executable, "-m", "base_station_gui.selfcheck", "/tmp/gui_selfcheck.png"],
+                               env={**env, "QT_QPA_PLATFORM": "offscreen"}, capture_output=True, text=True,
+                               timeout=60)
+            for line in r.stdout.strip().splitlines():
+                print("   ", line)
+            check("GUI toggle switched the mesh ON and OFF", r.returncode == 0,
+                  "" if r.returncode == 0 else (r.stderr.strip().splitlines() or ["?"])[-1])
+        s.close()
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
+        for p in procs:
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        log.close()
+
+    print(f"\n{sum(results)}/{len(results)} checks passed. Full log: /tmp/mesh_selftest.log")
+    sys.exit(0 if results and all(results) else 1)
+
+
+if __name__ == "__main__":
+    main()
