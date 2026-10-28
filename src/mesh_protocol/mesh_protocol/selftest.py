@@ -10,7 +10,7 @@ mesh OFF like a normal start, and drives the fake rover fast (2.5 m/s). Checks:
   4. rover drives on to base B -> odometry flows the whole way, no gaps
   5. second journey with the mesh ON from the start -> base B gets odometry from the
      first second to the end, base A never loses the rover
-  6. the GUI toggle works (if PyQt6 is installed)
+  6. the web dashboard streams the state and its toggle works
 """
 import json
 import os
@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 
 PORT = "tcp/127.0.0.1:7457"
 os.environ["MESH_HUB"] = PORT                          # must be set before mesh_common is imported
@@ -211,22 +212,37 @@ def main():
         check("base A never lost the rover", g_a < 2.5, f"(longest ACK gap {g_a:.1f} s)")
         check("no program crashed", all(p.poll() is None for p in procs if p not in (mission, mission2)))
 
-        print("\nTest 6: GUI toggle (PyQt6)")
-        try:
-            import PyQt6  # noqa: F401
-            import base_station_gui  # noqa: F401
-            have_gui = True
-        except Exception as e:
-            have_gui = False
-            print(f"  [SKIP] GUI not tested: {e}")
-        if have_gui:
-            r = subprocess.run([sys.executable, "-m", "base_station_gui.selfcheck", "/tmp/gui_selfcheck.png"],
-                               env={**env, "QT_QPA_PLATFORM": "offscreen"}, capture_output=True, text=True,
-                               timeout=60)
-            for line in r.stdout.strip().splitlines():
-                print("   ", line)
-            check("GUI toggle switched the mesh ON and OFF", r.returncode == 0,
-                  "" if r.returncode == 0 else (r.stderr.strip().splitlines() or ["?"])[-1])
+        print("\nTest 6: dashboard (web)")
+        start("mesh_dashboard.server", "--port", "18080")
+        base = "http://127.0.0.1:18080"
+
+        def dash_snapshot():
+            try:
+                with urllib.request.urlopen(base + "/events", timeout=3) as r:
+                    for line in r:
+                        if line.startswith(b"data: "):
+                            return json.loads(line[6:])
+            except Exception:
+                return None
+
+        def dash_post(path, body):
+            req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json"})
+            try:
+                return urllib.request.urlopen(req, timeout=3).status
+            except Exception:
+                return None
+
+        snap = None
+        for _ in range(60):                       # it loads the terrain first: allow 30 s
+            snap = dash_snapshot()
+            if snap and snap.get("coord"):
+                break
+            time.sleep(0.5)
+        check("dashboard streams the mesh state", bool(snap and snap.get("coord") and snap.get("stats")))
+        ok_off = dash_post("/api/mesh", {"on": False}) == 200 and wait_for(lambda: coord("mode") == "off", 8)
+        ok_on = dash_post("/api/mesh", {"on": True}) == 200 and wait_for(lambda: coord("mode") == "on", 8)
+        check("dashboard toggle switched the mesh OFF and ON", ok_off and ok_on)
         s.close()
     finally:
         for p in procs:

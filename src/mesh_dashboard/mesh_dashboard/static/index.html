@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mesh Mission Control</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="title"><b>MARS RELAY MESH</b> · MISSION CONTROL</div>
+  <div class="facts">
+    <span>T+ <b id="clock">--:--</b></span>
+    <span>LEADER <b id="leader">-</b></span>
+    <span>TERM <b id="term">-</b></span>
+    <span>LEASE <b id="lease">-</b></span>
+    <span id="conn" class="bad">● OFFLINE</span>
+  </div>
+  <button id="meshBtn" class="toggle" aria-pressed="false">MESH OFF</button>
+</header>
+
+<main class="grid">
+  <section class="panel map">
+    <h2>Crater profile · links · live routes</h2>
+    <svg id="map" viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Side view of the crater with units and links"></svg>
+    <div class="legend">
+      <span><i class="l-cmd"></i>command route</span>
+      <span><i class="l-tel"></i>odometry route</span>
+      <span><i class="l-up"></i>link up</span>
+      <span><i class="l-held"></i>bundles held</span>
+    </div>
+  </section>
+
+  <section class="panel links">
+    <h2>Base links</h2>
+    <div class="link-row"><span>BASE A → ROVER</span><b id="aState">-</b></div>
+    <div class="sub" id="aRoute">-</div>
+    <div class="link-row"><span>ROVER → BASE B</span><b id="bState">-</b></div>
+    <div class="sub" id="bRoute">-</div>
+    <h2>Delivery</h2>
+    <table class="deliv">
+      <thead><tr><th></th><th>sent</th><th>deliv</th><th>expired</th><th>%</th></tr></thead>
+      <tbody id="deliv"></tbody>
+    </table>
+  </section>
+
+  <section class="panel held">
+    <h2>Bundles held per node (custody)</h2>
+    <div id="held"></div>
+    <div class="legend"><span><i class="p0"></i>expedited</span><span><i class="p1"></i>odometry</span><span><i class="p2"></i>bulk</span></div>
+  </section>
+
+  <section class="panel odom">
+    <h2>Odometry at base B · late samples fill the gaps</h2>
+    <svg id="odom" viewBox="0 0 1000 160" preserveAspectRatio="none" role="img" aria-label="Rover position over time as received at base B"></svg>
+    <div class="legend"><span><i class="l-ontime"></i>on time</span><span><i class="l-late"></i>arrived late (held during an outage)</span><span id="odomFacts"></span></div>
+  </section>
+
+  <section class="panel log">
+    <h2>Event log</h2>
+    <ol id="log"></ol>
+  </section>
+
+  <section class="panel photo">
+    <h2>Rover photo → base B</h2>
+    <button id="photoBtn">TAKE PHOTO</button>
+    <div class="progress"><div id="photoBar"></div></div>
+    <div class="sub" id="photoText">no photo yet</div>
+    <img id="photoImg" alt="Photo received at base B" hidden>
+  </section>
+
+  <section class="panel fail">
+    <h2>Failure injection</h2>
+    <label>Drop packets <output id="dropOut">0 %</output>
+      <input id="drop" type="range" min="0" max="50" step="5" value="0"></label>
+    <label>Corrupt packets <output id="corruptOut">0 %</output>
+      <input id="corrupt" type="range" min="0" max="50" step="5" value="0"></label>
+    <div class="row">
+      <select id="unit" aria-label="Unit to kill or revive"></select>
+      <button id="killBtn" class="danger">KILL</button>
+      <button id="reviveBtn">REVIVE</button>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

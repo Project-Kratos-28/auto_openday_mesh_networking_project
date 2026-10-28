@@ -6,7 +6,7 @@
 #   ros2 launch mesh_protocol mesh.launch.py fake:=true      # no Gazebo, fake rover
 #   ros2 launch mesh_protocol mesh.launch.py injector:=none  # teammate's real injector instead
 #   ros2 launch mesh_protocol mesh.launch.py mesh:=on      # mesh ON from the start (default off)
-#   ros2 launch mesh_protocol mesh.launch.py gui:=true     # also open the base station GUI
+#   ros2 launch mesh_protocol mesh.launch.py dashboard:=true  # also start the web dashboard (localhost:8080)
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -39,8 +39,8 @@ def build(context):
     later += [py(u, "mesh_protocol.mesh_node", "--unit", u, *(f if u == "rover" else [])) for u in UNITS]
     if arg("coordinator") != "none":
         later.append(py("coordinator", "mesh_protocol.coordinator", *f, "--start", arg("mesh")))
-    if arg("gui") == "true":
-        later.append(py("gui", "base_station_gui.app"))
+    if arg("dashboard") == "true":
+        later.append(py("dashboard", "mesh_dashboard.server"))
     actions.append(TimerAction(period=2.0, actions=later))          # let the hub start first
     if arg("mission") == "true":
         actions.append(TimerAction(period=8.0, actions=[py("mission", "mesh_protocol.mission", *f)]))
@@ -56,6 +56,7 @@ def generate_launch_description():
                               description="passthrough = stand-in injector, none = use the real one"),
         DeclareLaunchArgument("coordinator", default_value="true", description="true | none"),
         DeclareLaunchArgument("mesh", default_value="off", description="mesh mode at start: off | on | auto"),
-        DeclareLaunchArgument("gui", default_value="false", description="open the base station GUI"),
+        DeclareLaunchArgument("dashboard", default_value="false",
+                              description="also start the web dashboard on http://localhost:8080"),
         OpaqueFunction(function=build),
     ])

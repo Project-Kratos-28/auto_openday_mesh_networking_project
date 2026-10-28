@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mesh_dashboard</name>
+  <version>0.3.0</version>
+  <description>Mission-control web dashboard for the relay mesh (stdlib HTTP server + offline page)</description>
+  <maintainer email="sashang256@gmail.com">sashang25</maintainer>
+  <license>MIT</license>
+  <exec_depend>mesh_common</exec_depend>
+  <exec_depend>mesh_link_model</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
