@@ -1,8 +1,7 @@
 """Small helper commands.
 
   ros2 run mesh_protocol mesh_monitor            # live view: both bases, leader drone, links
-  ros2 run mesh_protocol mesh_ctl on|off         # the mesh toggle (same as the GUI switch)
-  ros2 run mesh_protocol mesh_ctl auto|deploy    # auto = deploy only when base A loses the rover
+  ros2 run mesh_protocol mesh_ctl on|off         # the mesh toggle (same as the dashboard switch)
   ros2 run mesh_protocol send_cmd 1.0 0.0        # one drive command from base A (0 = stop)
   ros2 run mesh_protocol move_unit drone_1 0 0 12   # teleport a unit in Gazebo
   ros2 run mesh_protocol move_unit home             # drones back to their parking spot
