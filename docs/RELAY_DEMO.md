@@ -67,5 +67,5 @@ and the control floods `STATUS`, `LEADER`, `MESH_CMD`.
 - Base / rover / drone parking positions: `src/mars_sim/scripts/build_relay_world.py` **and** `START_XY` in `mesh_common`.
 - Then: `cd ~/mars_ws/src/mars_sim && python3 scripts/generate_crater.py && python3 scripts/build_relay_world.py && cd ~/mars_ws && colcon build --symlink-install`
 - Radio range: `RADIO_RANGE` in `mesh_common` (32 m now; it was picked so the centre of the crater needs 2 drones per base).
-- Other demo-scale numbers in `mesh_common`: `ROVER_SPEED`, `RELAY_HEIGHTS` (drone heights the planner tries), `REPLAN_DISTANCE`, `CRATER_RADIUS`, `GOAL_X`.
+- Other demo-scale numbers in `mesh_common`: `ROVER_SPEED`, `RELAY_HEIGHTS` (drone heights the planner tries), `DRONE_SPEED`, `CRATER_RADIUS`, `GOAL_X`.
 - Back to the big 800 m world: restore the backup made by `setup_small_scale.sh` (`~/scale_backup_<date>/`).

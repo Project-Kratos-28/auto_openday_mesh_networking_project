@@ -44,7 +44,7 @@ A ROS 2 + Gazebo simulation of a rover that loses contact with its base station 
 | Mission autopilot | Base A drives the rover from base A to base B over the mesh | `mesh_protocol` | ✅ |
 | Monitor | Live text view of both bases, links and counters | `mesh_protocol` | ✅ |
 | Mission-control dashboard | Web page: crater map with live routes, held bundles, delivery rates, late odometry, event log, photo, failure controls | `mesh_dashboard` | ✅ |
-| Self-test | Whole demo without Gazebo, 36 checks (~6 min) | `mesh_protocol` | ✅ |
+| Self-test | Whole demo without Gazebo, 37 checks (~8 min) | `mesh_protocol` | ✅ |
 
 Gazebo is reached with the **Gazebo Python bindings** (`gz.transport13`): positions come from `/world/mars_world/pose/info`, the rover is driven on `/rover/cmd_vel`, and drones move with the `set_pose` service. No ROS 2 bridge is needed for the demo.
 
@@ -119,7 +119,7 @@ cd ~/mars_ws
 colcon build --symlink-install
 source install/setup.bash
 echo "source ~/mars_ws/install/setup.bash" >> ~/.bashrc    # optional: every new terminal knows our packages
-ros2 run mesh_protocol selftest                            # ~6 min, should end with 36/36 checks passed
+ros2 run mesh_protocol selftest                            # ~8 min, should end with 37/37 checks passed
 ```
 
 ## 4. Run the demo
@@ -139,7 +139,7 @@ Optional T5: `ros2 run mesh_protocol mesh_monitor` (text view of everything).
 
 1. **Mesh OFF.** Base A is CONNECTED (`base_a → rover`) and base B shows NO DATA.
 2. **Link lost.** About 6 m past the rim the terrain blocks base A. Base A shows NO CONNECTION, and the rover stops after 2 s (safety watchdog).
-3. **Flip the toggle ON.** Base A sends MESH_CMD to the leader drone, which moves the drones to relay spots one at a time. Base A is connected again and base B starts RECEIVING odometry, first the samples held in the rover during the outage (amber in the dashboard), then live ones. The rover drives on.
+3. **Flip the toggle ON.** Base A sends MESH_CMD to the leader drone, which flies the drones to their relay spots. Base A is connected again and base B starts RECEIVING odometry, first the samples held in the rover during the outage (amber in the dashboard), then live ones. The rover drives on.
 5. **Try the failure controls.** Kill the leader drone: another takes over in about 2 s. Drop 10–20 % of packets: resends go up, nothing is lost. Take a photo: it arrives in chunks and is checked with sha256.
 4. **Follow.** The drones are moved ahead of the rover, one at a time, so neither chain ever breaks. Near base B all 4 drones form one chain back to base A.
 
@@ -175,7 +175,7 @@ Gazebo topics and services used:
 | `/rover/cmd_vel` | `gz.msgs.Twist` | drive the rover (sent by the rover's mesh node) |
 | `/rover/odom` | `gz.msgs.Odometry` | rover wheel odometry (sent to base B) |
 | `/world/mars_world/pose/info` | `gz.msgs.Pose_V` | true positions of all units (link model) |
-| `/world/mars_world/set_pose` | service `gz.msgs.Pose` | teleport drones (each drone moves itself) |
+| `/world/mars_world/set_pose` | service `gz.msgs.Pose` | move drones: each drone glides itself in small steps (20 a second) |
 
 ## 6. How the network works
 
@@ -229,9 +229,10 @@ A packet never goes straight from one unit to another:
 
 The dashboard / `mesh_ctl` asks base A, which sends `MESH_CMD` to the leader every second until a heartbeat shows the new mode. While deployed, the leader works like this (using positions **reported** in `STATUS`, never true positions):
 - **Checks:** every 0.5 s it tests both chains, for where the rover is now and where it'll be in 3 s.
-- **Re-plans:** when a chain would break, or after the rover moves 8 m.
+- **Re-plans:** only when a chain would break (now or in 3 s). Every move is a flight that can open a short gap, so the leader doesn't reshuffle drones while both chains hold.
 - **Planner** (`mesh_link_model/planner.py`): for each base, it tries 0, 1, 2… drones spaced along the line rover → base, at 3 / 6 / 10 / 15 m above the ground. It uses the fewest that give every hop line of sight and range, and spare drones go to the chain with the longest hop, so all 4 always help.
-- **Moving drones:** one target at a time, in an order that keeps both chains working at every step; each drone teleports itself to its target. Drones with no `STATUS` for 2 s count as dead and are left out.
+- **Assigning spots:** new relay spots go to the nearest drones (shortest longest flight), so a re-plan never sends drones across the crater to swap places.
+- **Moving drones:** each drone **flies** to its target at 15 m/s (`DRONE_SPEED`), 20 steps a second, at least 2 m above the ground (`mesh_protocol/mover.py`, in a background thread). When nothing is connected yet all drones fly at once; while both chains work, one at a time, a spare drone first, in an order that keeps both chains working. Drones with no `STATUS` for 2 s count as dead and are left out.
 - **Route table:** shortest hop count (ties: better links) over the links the leader works out from positions + range + line of sight on the terrain map, so routes change the moment a move is ordered.
 
 ### Zenoh keys
@@ -265,7 +266,7 @@ All programs connect only on **`127.0.0.1`** (one hub at `tcp/127.0.0.1:7447`, m
 | `ros2 run mesh_protocol mesh_monitor` | Live text view |
 | `ros2 run mesh_protocol send_cmd 1.0 [0.2]` | One drive command from base A (0 = stop) |
 | `ros2 run mesh_protocol move_unit drone_1 0 0 12` / `move_unit home` | Teleport a unit / park all drones (`--fake` without Gazebo) |
-| `ros2 run mesh_protocol selftest` | Whole demo without Gazebo, 36 checks |
+| `ros2 run mesh_protocol selftest` | Whole demo without Gazebo, 37 checks |
 | `mesh_node --unit drone_1 [--mesh on] [--fake]` · `ros2 run mesh_link_model link_model` / `radio_channel` / `passthrough_injector` | Single pieces (normally started by the launch file) |
 
 ## 8. Where to plug in your part
@@ -292,7 +293,7 @@ All programs connect only on **`127.0.0.1`** (one hub at `tcp/127.0.0.1:7447`, m
 |---|---|---|
 | Crater size / depth / bumps, terrain size | numbers at the top of `src/mars_sim/scripts/generate_crater.py` | regenerate (below) |
 | Where the bases, rover or parked drones start | `src/mars_sim/scripts/build_relay_world.py` **and** `START_XY` in `src/mesh_common/mesh_common/__init__.py` | regenerate (below) |
-| Radio range, antenna heights, rover speed, relay heights, goal | `src/mesh_common/mesh_common/__init__.py` (`RADIO_RANGE`, `ANTENNA_HEIGHT`, `ROVER_SPEED`, `RELAY_HEIGHTS`, `REPLAN_DISTANCE`, `GOAL_X`) | relaunch |
+| Radio range, antenna heights, rover speed, relay heights, goal | `src/mesh_common/mesh_common/__init__.py` (`RADIO_RANGE`, `ANTENNA_HEIGHT`, `ROVER_SPEED`, `RELAY_HEIGHTS`, `DRONE_SPEED`, `GOAL_X`) | relaunch |
 | Rover / drone / base shape | `src/mars_sim/models/<model>/model.sdf` | relaunch |
 | Gravity, sun, sky | `build_relay_world.py` (the world file is generated) | regenerate |
 
@@ -389,5 +390,6 @@ More in [`ERRORS.md`](ERRORS.md).
 - [x] Coordinator on an elected leader drone (kill it: another takes over)
 - [x] Mission-control web dashboard (map, routes, held bundles, delivery, late odometry, events, photo, failure controls)
 - [x] Rover photo transfer in chunks with a sha256 check
-- [ ] Drones that fly (velocity control) instead of teleporting
+- [x] Drones glide to their spots (stepped `set_pose`, 15 m/s, above the terrain)
+- [ ] Drones with real flight physics (multicopter plugin, velocity control). More ideas: [`docs/OPTIMIZATIONS.md`](docs/OPTIMIZATIONS.md)
 - [ ] Final demo: rover enters crater → link lost → mesh ON → both bases connected → corruption on → a drone fails → re-route

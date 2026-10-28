@@ -2,6 +2,7 @@
 
 Read this first if you're picking up v3. Full design (the why, every number, every decision):
 [`docs/superpowers/specs/2026-10-28-dtn-mesh-design.md`](superpowers/specs/2026-10-28-dtn-mesh-design.md).
+Ideas for after the demo: [`OPTIMIZATIONS.md`](OPTIMIZATIONS.md).
 
 - **Branch:** `v3-dtn`. `main` keeps the working v2 demo until v3 passes the self-test.
 - **Deadline:** open day, 2026-10-30.
@@ -21,6 +22,7 @@ stop after any step: each one leaves a working demo.
 | 3 | Coordinator on a drone (election), old coordinator process removed | done | Self-test 34/34 incl. leader kill + takeover |
 | 4 | Photo transfer | done | 103 chunks under 10 % loss, sha256 OK. Self-test 36/36 |
 | 5 | README / RELAY_DEMO updated for v3 | done | |
+| 5b | Smooth drone flight (glide instead of jump) | done | `mesh_protocol/mover.py`. Self-test 37/37 at demo speed |
 | 6 | **Run on Ubuntu 24.04 + Jazzy + Gazebo** | **todo** | everything above was tested in fake mode on 22.04 / Python 3.10. Do this first: `colcon build --symlink-install`, the self-test, then the 4-terminal Gazebo demo (README section 4) |
 
 ## v2 → v3 at a glance
@@ -33,7 +35,7 @@ stop after any step: each one leaves a working demo.
 | Old data | TTL (hop limit) only | `lifetime` per packet: COMMAND 1 s, TELEMETRY 120 s, PHOTO_CHUNK 300 s. Expired = dropped |
 | Priority | none | 0 expedited (commands, control), 1 normal (odometry), 2 bulk (photo). Send rate capped at 40/s per node |
 | Coordinator | separate process, reads true positions, orders can't be lost | runs on the leader drone (lease election, lowest id wins, takeover ~2 s), plans from positions reported over the mesh; routes from those positions + line of sight on its terrain map |
-| Moving drones | coordinator teleports them | each drone teleports itself to its target from the `LEADER` bundle |
+| Moving drones | coordinator teleports them | each drone **glides** to its target from the `LEADER` bundle: 15 m/s, 20 steps a second, ≥ 2 m above ground, in a background thread; spots go to the nearest drones |
 | Mesh modes | off / on / auto | off / on (`auto` removed) |
 | Neighbours | HELLO 1 s, gone after 3 s | HELLO 0.5 s, gone after 1.5 s |
 | Failure controls | corrupt / drop | + `kill` / `revive` a unit |
@@ -72,8 +74,8 @@ stop after any step: each one leaves a working demo.
 ## How to check your work
 
 ```bash
-python3 -m pytest src/*/test             # 76 unit tests, seconds
-ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~6 min; must end with 36/36 checks passed
+python3 -m pytest src/*/test             # 83 unit tests, seconds
+ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~8 min; must end with 37/37 checks passed
 ```
 
 ## Decisions made while building (differ from the design doc)
@@ -85,9 +87,21 @@ ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~6 min; must en
 - Every unit, not only drones, passes on control floods. Otherwise drones split into two groups during
   re-deploys and each elected a leader.
 - No re-route-after-5-tries limit: the store looks up the route on every send.
+- Drones glide instead of jumping (`mover.py`). Because every move is now a flight that can open a short
+  relay gap, the leader re-plans **only when a chain is about to break** (v2 also re-planned every 8 m:
+  that caused 3-5 s base A gaps with flying drones). New spots go to the nearest drones, a spare drone
+  moves first, and when nothing is connected yet all drones fly at once.
+- The self-test drives at demo speed (1 m/s) instead of 2.5 m/s.
 - No per-bundle "custody" events in `mesh/events` (counters only): 8+ a second would flood the log.
 
 ## Known limits
+
+- Tested at demo speed (1 m/s). Much faster rovers can outrun a drone reshuffle and base A briefly loses
+  the rover; ideas 1-3 in [`OPTIMIZATIONS.md`](OPTIMIZATIONS.md) address that.
+- Two drones can occasionally start an election at the same moment (both term N); the lower id wins
+  within a heartbeat, as designed.
+- In Gazebo each drone calls `set_pose` 20 times a second while it flies. That needs the Gazebo Python
+  bindings (`python3-gz-transport13`); the `gz service` command-line fallback is far too slow for it.
 
 Small issues found in the final review and left for later (none breaks the demo):
 - A killed node stops expiring its store, so on revive it reports a burst of expired pings.
