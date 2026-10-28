@@ -23,7 +23,8 @@ stop after any step: each one leaves a working demo.
 | 4 | Photo transfer | done | 103 chunks under 10 % loss, sha256 OK. Self-test 36/36 |
 | 5 | README / RELAY_DEMO updated for v3 | done | |
 | 5b | Smooth drone flight (glide instead of jump) | done | `mesh_protocol/mover.py`. Self-test 37/37 at demo speed |
-| 6 | **Run on Ubuntu 24.04 + Jazzy + Gazebo** | **todo** | everything above was tested in fake mode on 22.04 / Python 3.10. Do this first: `colcon build --symlink-install`, the self-test, then the 4-terminal Gazebo demo (README section 4) |
+| 6 | Run on Ubuntu 24.04 + Jazzy + Gazebo | done | build OK, 83/83 unit tests, self-test 37/37, headless Gazebo demo: rover arrived at base B. 4 drone nodes at once: ~18 `set_pose`/s each |
+| 7 | Integrate the unpublished v2 work from `main` | done | mission false-assist fix, smooth flight (speed-up / slow-down, facing), missing-bindings warning, 2 new self-test checks. 86 unit tests, self-test 39/39 |
 
 ## v2 → v3 at a glance
 
@@ -35,7 +36,7 @@ stop after any step: each one leaves a working demo.
 | Old data | TTL (hop limit) only | `lifetime` per packet: COMMAND 1 s, TELEMETRY 120 s, PHOTO_CHUNK 300 s. Expired = dropped |
 | Priority | none | 0 expedited (commands, control), 1 normal (odometry), 2 bulk (photo). Send rate capped at 40/s per node |
 | Coordinator | separate process, reads true positions, orders can't be lost | runs on the leader drone (lease election, lowest id wins, takeover ~2 s), plans from positions reported over the mesh; routes from those positions + line of sight on its terrain map |
-| Moving drones | coordinator teleports them | each drone **glides** to its target from the `LEADER` bundle: 15 m/s, 20 steps a second, ≥ 2 m above ground, in a background thread; spots go to the nearest drones |
+| Moving drones | coordinator teleports them | each drone **glides** to its target from the `LEADER` bundle: up to 15 m/s, speeding up / slowing down at `DRONE_ACCEL` (10 m/s²), facing the way it flies, 20 steps a second, ≥ 2 m above ground, in a background thread; spots go to the nearest drones |
 | Mesh modes | off / on / auto | off / on (`auto` removed) |
 | Neighbours | HELLO 1 s, gone after 3 s | HELLO 0.5 s, gone after 1.5 s |
 | Failure controls | corrupt / drop | + `kill` / `revive` a unit |
@@ -57,7 +58,9 @@ stop after any step: each one leaves a working demo.
 | `mesh_dashboard` (new) | stdlib HTTP server + Server-Sent Events, offline HTML/JS/SVG, mission-control look |
 | `base_station_gui` | deleted (the unmerged `origin/Ronak_GUI` branch is dropped too) |
 | `mesh_link_model/terrain.py` | also finds `crater.obj` in a source checkout outside `~/mars_ws` |
-| `mars_sim`, `mission.py` | unchanged |
+| `mission.py` | waiting during an outage no longer counts as "stuck" (no false lift-forward assist when the link returns) |
+| `mesh_link_model/sim_io.py` | `fast_available()`: drones log a warning if the Gazebo Python bindings are missing |
+| `mars_sim` | unchanged |
 
 ## Zenoh keys: new or changed in v3
 
@@ -74,8 +77,8 @@ stop after any step: each one leaves a working demo.
 ## How to check your work
 
 ```bash
-python3 -m pytest src/*/test             # 83 unit tests, seconds
-ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~8 min; must end with 37/37 checks passed
+python3 -m pytest src/*/test             # 86 unit tests, seconds
+ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~8 min; must end with 39/39 checks passed
 ```
 
 ## Decisions made while building (differ from the design doc)
@@ -101,7 +104,8 @@ ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~8 min; must en
 - Two drones can occasionally start an election at the same moment (both term N); the lower id wins
   within a heartbeat, as designed.
 - In Gazebo each drone calls `set_pose` 20 times a second while it flies. That needs the Gazebo Python
-  bindings (`python3-gz-transport13`); the `gz service` command-line fallback is far too slow for it.
+  bindings (`python3-gz-transport13`); the `gz service` command-line fallback is far too slow for it
+  (each drone logs a WARNING at start if the bindings are missing).
 
 Small issues found in the final review and left for later (none breaks the demo):
 - A killed node stops expiring its store, so on revive it reports a burst of expired pings.

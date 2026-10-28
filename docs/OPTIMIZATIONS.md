@@ -21,7 +21,7 @@ These fix things we have actually seen in the self-test.
 | # | Idea | What it gives | Size |
 |---|---|---|---|
 | 4 | **Real flight in Gazebo.** A multicopter plugin and controller on the drone model, driven by velocity commands, instead of stepped `set_pose` teleports. | Real physics and inertia; drones look like drones | L |
-| 5 | **Smoother paths.** Ease in and out (accelerate, cruise, slow down) instead of constant speed. Fly a short curve instead of a straight line plus "stay 2 m above ground". | Nicer to watch | S |
+| 5 | **Smoother paths.** ~~Ease in and out (accelerate, cruise, slow down) instead of constant speed.~~ Done (`DRONE_ACCEL`, `mover.py`). Still open: fly a short curve instead of a straight line plus "stay 2 m above ground". | Nicer to watch | S |
 | 6 | **Avoid other drones.** Keep a minimum gap between drones in flight (today two drones can pass through each other). | Realism | M |
 | 7 | **Battery and rotation.** Drones report battery in STATUS; the leader swaps a low drone out with a parked one, then sends it home. | A good story for visitors, longer missions | M |
 | 8 | **Height choice per spot.** The planner tries fixed heights (3 / 6 / 10 / 15 m). Picking the lowest height that still has line of sight would shorten climbs. | Shorter flights | S |

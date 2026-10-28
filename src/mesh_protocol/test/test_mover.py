@@ -91,3 +91,38 @@ def test_new_target_mid_flight_turns_from_where_it_is():
     assert _wait_until(lambda: calls[-1] == (0.0, 10.0, 5.0))
     turn = next(i for i, c in enumerate(calls) if c[1] > 0)
     assert 0 < calls[turn - 1][0] < 10.0                      # it turned in mid-air, not from the start
+
+
+def _steps(start, calls):
+    return [((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 + (b[2] - a[2]) ** 2) ** 0.5
+            for a, b in zip([start] + calls, calls)]
+
+
+def test_speeds_up_and_slows_down_gently():
+    calls, fn = _record()
+    m = Mover(fn, get_pos=lambda: (0.0, 0.0, 5.0), speed=20.0, period=0.02, accel=100.0)
+    m.request((20.0, 0.0, 5.0))
+    assert _wait_until(lambda: calls and calls[-1] == (20.0, 0.0, 5.0))
+    steps = _steps((0.0, 0.0, 5.0), calls)
+    assert steps[0] < steps[len(steps) // 2]                  # starts slow, full speed in the middle
+    assert steps[-2] < steps[len(steps) // 2]                 # slows down before landing
+    assert max(b - a for a, b in zip(steps, steps[1:])) <= 100.0 * 0.02 * 0.02 + 1e-6   # no sudden jump
+
+
+def test_faces_the_way_it_flies():
+    calls = []
+    m = Mover(lambda *p: calls.append(p) or True, get_pos=lambda: (0.0, 0.0, 5.0),
+              speed=20.0, period=0.02, face=True)
+    m.request((0.0, 4.0, 5.0))                                # fly along +y: yaw = 90 degrees
+    assert _wait_until(lambda: calls and calls[-1][:3] == (0.0, 4.0, 5.0))
+    assert all(abs(c[3] - 1.5708) < 0.01 for c in calls)
+
+
+def test_flight_time_matches_the_mover():
+    from mesh_common import flight_time, DRONE_SPEED, DRONE_ACCEL
+    for dist in (2.0, 40.0):
+        calls, fn = _record()
+        m = Mover(fn, get_pos=lambda: (0.0, 0.0, 5.0), speed=DRONE_SPEED, period=0.01, accel=DRONE_ACCEL)
+        m.request((dist, 0.0, 5.0))
+        assert _wait_until(lambda: calls and calls[-1] == (dist, 0.0, 5.0), t=10)
+        assert abs(len(calls) * 0.01 - flight_time(dist)) < 0.25 * flight_time(dist) + 0.1

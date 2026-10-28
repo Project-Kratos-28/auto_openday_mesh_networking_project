@@ -10,7 +10,7 @@ import itertools
 import math
 import random
 
-from mesh_common import DRONES, UNITS, START_XY, DRONE_HOVER, DRONE_SPEED, RADIO_RANGE, LEASE
+from mesh_common import DRONES, UNITS, START_XY, DRONE_HOVER, RADIO_RANGE, LEASE, flight_time
 from mesh_link_model.planner import plan, link_ok, antenna
 from mesh_protocol.routing import compute_routes
 
@@ -161,7 +161,7 @@ class Coordinator:
         start = pos.get(d, self.targets[d])
         self.log(f"t={now:.1f} fly {d} {math.dist(start, self.goal[d]):.0f} m")
         self.targets[d] = self.goal[d]
-        self.moving[d] = now + math.dist(start, self.goal[d]) / DRONE_SPEED + MOVE_SLACK
+        self.moving[d] = now + flight_time(math.dist(start, self.goal[d])) + MOVE_SLACK
 
     def _move(self, pos, now):
         """Hand out drone targets. While both chains work: one drone at a time, in an order that keeps

@@ -7,12 +7,13 @@ mesh OFF like a normal start, and drives the fake rover at demo speed (ROVER_SPE
   1. start (mesh OFF): a leader drone is elected, base A talks to the rover directly, base B gets nothing
   2. mesh OFF, rover drives into the crater -> base A loses it, nothing deploys
   3. toggle ON -> all 4 drones deploy, base A connected again, base B receives odometry
-  4. rover drives on to base B -> odometry flows the whole way, no gaps
+  4. rover drives on to base B -> odometry flows the whole way, no gaps, no stuck-assists
   5. second journey (demo speed, 1 m/s) with the mesh ON from the start -> base B gets odometry from the
-     first second to the end, base A never loses the rover
+     first second to the end, base A never loses the rover, the drones glide (no teleport jumps)
   6. the web dashboard streams the state and its toggle works
 """
 import json
+import math
 import os
 import subprocess
 import sys
@@ -23,7 +24,7 @@ import urllib.request
 PORT = "tcp/127.0.0.1:7457"
 os.environ["MESH_HUB"] = PORT                          # must be set before mesh_common is imported
 
-from mesh_common import (UNITS, DRONES, START_XY, ROVER_SPEED, CRATER_RADIUS, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,  # noqa: E402
+from mesh_common import (UNITS, DRONES, START_XY, ROVER_SPEED, CRATER_RADIUS, DRONE_SPEED, KEY_POSITIONS, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,  # noqa: E402
                          KEY_COORD_CMD, KEY_MISSION, KEY_FAKE_POSE, KEY_FAKE_CMD_VEL, KEY_FAIL_CONTROL,
                          KEY_PHOTO_B, KEY_PHOTO_CMD,
                          open_session)
@@ -47,13 +48,33 @@ def main():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name} {detail}", flush=True)
 
     lock = threading.Lock()
-    st = {"acks": [], "odoms": [], "coord": None, "mission": None, "stats": {}, "max_held": 0, "photo": None}
+    st = {"acks": [], "odoms": [], "coord": None, "mission": None, "stats": {}, "max_held": 0, "photo": None,
+          "pos": []}
 
     def on_stats(x):
         m = json.loads(x.payload.to_bytes())
         with lock:
             st["stats"][str(x.key_expr).split("/")[-1]] = m
             st["max_held"] = max(st["max_held"], sum(m.get("held", {}).values()))
+
+    def on_pos(x):
+        m = json.loads(x.payload.to_bytes())
+        with lock:
+            st["pos"].append((time.time(), m["positions"]))
+
+    def fastest_drone(t0, t1):
+        """Fastest drone speed over ~1 s windows (a teleport would show up as a huge speed)."""
+        with lock:
+            hist = [(t, p) for t, p in st["pos"] if t0 <= t <= t1]
+        top = 0.0
+        for i, (ta, pa) in enumerate(hist):
+            for tb, pb in hist[i + 1:]:
+                if tb - ta >= 1.0:
+                    for d in DRONES:
+                        if pa.get(d) and pb.get(d):
+                            top = max(top, math.dist(pa[d], pb[d]) / (tb - ta))
+                    break
+        return top
 
     def total(field):
         with lock:
@@ -116,7 +137,8 @@ def main():
         s = open_session()
         subs = [s.declare_subscriber(KEY_ACKS_A, rec("acks")), s.declare_subscriber(KEY_ODOM_B, rec("odoms")),  # noqa
                 s.declare_subscriber(KEY_COORD_STATE, rec("coord")), s.declare_subscriber(KEY_MISSION, rec("mission")),
-                s.declare_subscriber("mesh/stats/*", on_stats), s.declare_subscriber(KEY_PHOTO_B, rec("photo"))]
+                s.declare_subscriber("mesh/stats/*", on_stats), s.declare_subscriber(KEY_PHOTO_B, rec("photo")),
+                s.declare_subscriber(KEY_POSITIONS, on_pos)]
 
         print("\nTest 1: start, mesh OFF")
         check("base A talks to the rover directly", wait_for(lambda: age("acks") is not None and age("acks") < 1.5, 20))
@@ -162,6 +184,8 @@ def main():
         with lock:
             mis = st["mission"] or {}
         check("rover arrived next to base B", ok and mis.get("state") == "ARRIVED", f"(x = {mis.get('x')} m)")
+        # waiting for the drones during the outage is not being stuck: no lift-forward 'assist'
+        check("no stuck-assists needed", mis.get("assists", 0) == 0, f"({mis.get('assists', 0)})")
         g_b = longest_gap(times("odoms", t_flow), t_flow, t_end)
         g_a = longest_gap(times("acks", t_flow), t_flow, t_end)
         check("odometry reached base B the whole way", g_b < MAX_GAP, f"(longest gap {g_b:.1f} s)")
@@ -239,6 +263,7 @@ def main():
         s.put(KEY_FAKE_CMD_VEL, json.dumps({"linear": 0, "angular": 0}))
         s.put(KEY_FAKE_POSE, json.dumps({"unit": "rover", "pos": [*START_XY["rover"], 0.0], "yaw": 0.0}))
         time.sleep(2)
+        t_on5 = time.time()
         s.put(KEY_COORD_CMD, "on")
         wait_for(lambda: coord("state") == "DEPLOYED", 5)
         ch = coord("chains") or {}
@@ -253,7 +278,10 @@ def main():
         t1 = time.time()
         with lock:
             mis = st["mission"] or {}
-        check("rover arrived again", ok and mis.get("state") == "ARRIVED")
+        check("rover arrived again, no stuck-assists", ok and mis.get("state") == "ARRIVED"
+              and mis.get("assists", 0) == 0, f"({mis.get('assists', 0)} assists)")
+        top = fastest_drone(t_on5, t1)
+        check("drones flew, no teleport jumps", 0.5 < top < DRONE_SPEED * 1.4, f"(fastest {top:.1f} m/s)")
         g_b = longest_gap(times("odoms", t0), t0, t1)
         g_a = longest_gap(times("acks", t0), t0, t1)
         n_b = len(times("odoms", t0, t1))

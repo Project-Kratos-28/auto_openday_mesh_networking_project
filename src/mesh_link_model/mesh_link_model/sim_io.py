@@ -33,6 +33,16 @@ def _gz_request(name, x, y, z, qz, qw):
         return None
 
 
+def fast_available():
+    """True if Gazebo's Python bindings are installed (teleports take milliseconds)."""
+    try:
+        import gz.transport13  # noqa: F401
+        import gz.msgs10  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def teleport(unit, x, y, z, yaw=0.0, fake=False, session=None):
     """Move `unit` to (x, y, z) facing `yaw` (radians). Returns True if it worked."""
     if fake:

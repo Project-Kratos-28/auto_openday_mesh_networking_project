@@ -34,6 +34,15 @@ GOAL_X = 33.0                 # mission ends when the rover reaches this x (in f
 ROVER_SPEED = 1.0             # m/s, mission default (whole trip ~70 s)
 RELAY_HEIGHTS = (3.0, 6.0, 10.0, 15.0)   # m above ground the planner tries for relay drones
 DRONE_SPEED = 15.0            # m/s drones glide at (20 steps a second, mesh_protocol/mover.py)
+DRONE_ACCEL = 10.0            # m/s^2: drones speed up / slow down gently (full speed after 1.5 s)
+
+
+def flight_time(distance):
+    """Seconds a drone needs to fly `distance` m, speeding up and slowing down at DRONE_ACCEL."""
+    ramp = DRONE_SPEED ** 2 / DRONE_ACCEL                    # metres spent speeding up + slowing down
+    if distance >= ramp:
+        return distance / DRONE_SPEED + DRONE_SPEED / DRONE_ACCEL
+    return 2 * (distance / DRONE_ACCEL) ** 0.5               # short hop: never reaches full speed
 
 # ------------------------------------------------------------------ radio
 RADIO_RANGE = 32.0            # metres: further than this = no link (base A <-> base B is 80 m)

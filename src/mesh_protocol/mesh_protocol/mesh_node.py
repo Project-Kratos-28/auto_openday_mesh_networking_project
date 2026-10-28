@@ -27,10 +27,10 @@ import time
 from collections import OrderedDict
 
 from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED, SEND_RATE, LATE_AFTER,
-                         LEASE, DRONE_SPEED, KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD,
+                         LEASE, DRONE_SPEED, DRONE_ACCEL, KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD,
                          KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO_B, KEY_PHOTO_CMD, key_tx, key_rx, key_stats,
                          make_packet, encode, decode, expired, bundle_id, open_session)
-from mesh_link_model.sim_io import teleport
+from mesh_link_model.sim_io import teleport, fast_available
 from mesh_protocol.leader import Election
 from mesh_protocol.mover import Mover
 from mesh_protocol.photo import Reassembler, chunks, photo_bytes
@@ -90,10 +90,14 @@ class MeshNode:
             from mesh_protocol.leader import Coordinator
             terrain = Terrain.load()
             self.coord = Coordinator(terrain, mesh, log=self.log)
-            # glide to targets (DRONE_SPEED m/s, 20 steps a second), at least 2 m above the ground
-            self.mover = Mover(lambda x, y, z: teleport(unit, x, y, z, fake=fake, session=self.session),
+            # glide to targets (DRONE_SPEED m/s, 20 steps a second), at least 2 m above the ground,
+            # speeding up / slowing down gently (DRONE_ACCEL) and facing the way it flies
+            self.mover = Mover(lambda x, y, z, yaw: teleport(unit, x, y, z, yaw, fake=fake, session=self.session),
                                get_pos=lambda: self.pos, speed=DRONE_SPEED, period=0.05,
-                               floor=terrain.ground)
+                               floor=terrain.ground, accel=DRONE_ACCEL, face=True)
+            if not fake and not fast_available():
+                self.log("WARNING: Gazebo Python bindings missing, drones will move in jerks. "
+                         "Install: sudo apt install python3-gz-transport13 python3-gz-msgs10")
         self.session = session or open_session()
         s = self.session
         self.pub_tx = s.declare_publisher(key_tx(unit))

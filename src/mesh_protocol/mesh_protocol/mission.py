@@ -11,7 +11,8 @@ Stops at x = GOAL_X, next to base B.
 
 Assist (backup): if the rover IS getting the commands (ACKs arrive) but hasn't moved 0.5 m
 in 6 s (stuck on a slope or a bump), it is lifted 1.5 m forward along the path.
-If commands are NOT getting through, it does nothing: that's the comms problem the mesh fixes.
+If commands are NOT getting through, it does nothing and doesn't count that time as stuck: that's
+the comms problem the mesh fixes (the rover waits while the drones fly into place).
 """
 import argparse
 import json
@@ -96,9 +97,12 @@ def main():
             linear = args.speed * max(0.2, math.cos(err))
             pub_cmd.put(json.dumps({"linear": round(linear, 2), "angular": round(angular, 2)}))
 
-            history.append((now, x))
-            history = [h for h in history if now - h[0] <= args.stuck_time]
-            stuck = (link_ok and now - history[0][0] >= args.stuck_time - 0.6
+            if link_ok:
+                history.append((now, x))
+                history = [h for h in history if now - h[0] <= args.stuck_time]
+            else:
+                history = []            # stopped because there's no link (waiting for drones), not stuck
+            stuck = (link_ok and history and now - history[0][0] >= args.stuck_time - 0.6
                      and x - history[0][1] < STUCK_MOVE)
             if stuck and not args.no_assist:
                 nx, ny = x + ASSIST_STEP, y * 0.5

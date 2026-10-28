@@ -44,7 +44,7 @@ A ROS 2 + Gazebo simulation of a rover that loses contact with its base station 
 | Mission autopilot | Base A drives the rover from base A to base B over the mesh | `mesh_protocol` | ✅ |
 | Monitor | Live text view of both bases, links and counters | `mesh_protocol` | ✅ |
 | Mission-control dashboard | Web page: crater map with live routes, held bundles, delivery rates, late odometry, event log, photo, failure controls | `mesh_dashboard` | ✅ |
-| Self-test | Whole demo without Gazebo, 37 checks (~8 min) | `mesh_protocol` | ✅ |
+| Self-test | Whole demo without Gazebo, 39 checks (~8 min) | `mesh_protocol` | ✅ |
 
 Gazebo is reached with the **Gazebo Python bindings** (`gz.transport13`): positions come from `/world/mars_world/pose/info`, the rover is driven on `/rover/cmd_vel`, and drones move with the `set_pose` service. No ROS 2 bridge is needed for the demo.
 
@@ -89,9 +89,9 @@ sudo apt update && sudo apt install -y gz-harmonic ros-jazzy-ros-gz
 ```
 > ⚠️ Use **Gazebo Harmonic** (`gz sim`) only. Do **not** install Gazebo Classic (`gazebo`, `gazebo11`, `gazebo_ros`).
 
-**Step 5: Python parts used by the mesh** (Gazebo Python bindings, numpy, PyQt6, Zenoh)
+**Step 5: Python parts used by the mesh** (Gazebo Python bindings, numpy, Zenoh)
 ```bash
-sudo apt install -y python3-gz-transport13 python3-gz-msgs10 python3-numpy python3-pyqt6 python3-pip
+sudo apt install -y python3-gz-transport13 python3-gz-msgs10 python3-numpy python3-pip
 pip install --user --break-system-packages eclipse-zenoh
 ```
 
@@ -100,7 +100,6 @@ pip install --user --break-system-packages eclipse-zenoh
 echo $ROS_DISTRO                                               # → jazzy
 gz sim --version                                               # → Gazebo Sim, version 8.x
 python3 -c "import zenoh, numpy, gz.transport13; print('python OK')"
-python3 -c "import PyQt6.QtWidgets; print('PyQt6 OK')"
 ```
 
 **Step 7: Get access + log in to GitHub.** The repo is **private**. Ask the owner to add you (repo → Settings → Collaborators), accept the invite, then:
@@ -119,7 +118,7 @@ cd ~/mars_ws
 colcon build --symlink-install
 source install/setup.bash
 echo "source ~/mars_ws/install/setup.bash" >> ~/.bashrc    # optional: every new terminal knows our packages
-ros2 run mesh_protocol selftest                            # ~8 min, should end with 37/37 checks passed
+ros2 run mesh_protocol selftest                            # ~8 min, should end with 39/39 checks passed
 ```
 
 ## 4. Run the demo
@@ -232,7 +231,7 @@ The dashboard / `mesh_ctl` asks base A, which sends `MESH_CMD` to the leader eve
 - **Re-plans:** only when a chain would break (now or in 3 s). Every move is a flight that can open a short gap, so the leader doesn't reshuffle drones while both chains hold.
 - **Planner** (`mesh_link_model/planner.py`): for each base, it tries 0, 1, 2… drones spaced along the line rover → base, at 3 / 6 / 10 / 15 m above the ground. It uses the fewest that give every hop line of sight and range, and spare drones go to the chain with the longest hop, so all 4 always help.
 - **Assigning spots:** new relay spots go to the nearest drones (shortest longest flight), so a re-plan never sends drones across the crater to swap places.
-- **Moving drones:** each drone **flies** to its target at 15 m/s (`DRONE_SPEED`), 20 steps a second, at least 2 m above the ground (`mesh_protocol/mover.py`, in a background thread). When nothing is connected yet all drones fly at once; while both chains work, one at a time, a spare drone first, in an order that keeps both chains working. Drones with no `STATUS` for 2 s count as dead and are left out.
+- **Moving drones:** each drone **flies** to its target at up to 15 m/s (`DRONE_SPEED`), 20 steps a second, at least 2 m above the ground, speeding up and slowing down gently (`DRONE_ACCEL`) and facing the way it flies (`mesh_protocol/mover.py`, in a background thread). When nothing is connected yet all drones fly at once; while both chains work, one at a time, a spare drone first, in an order that keeps both chains working. Drones with no `STATUS` for 2 s count as dead and are left out.
 - **Route table:** shortest hop count (ties: better links) over the links the leader works out from positions + range + line of sight on the terrain map, so routes change the moment a move is ordered.
 
 ### Zenoh keys
@@ -266,7 +265,7 @@ All programs connect only on **`127.0.0.1`** (one hub at `tcp/127.0.0.1:7447`, m
 | `ros2 run mesh_protocol mesh_monitor` | Live text view |
 | `ros2 run mesh_protocol send_cmd 1.0 [0.2]` | One drive command from base A (0 = stop) |
 | `ros2 run mesh_protocol move_unit drone_1 0 0 12` / `move_unit home` | Teleport a unit / park all drones (`--fake` without Gazebo) |
-| `ros2 run mesh_protocol selftest` | Whole demo without Gazebo, 37 checks |
+| `ros2 run mesh_protocol selftest` | Whole demo without Gazebo, 39 checks |
 | `mesh_node --unit drone_1 [--mesh on] [--fake]` · `ros2 run mesh_link_model link_model` / `radio_channel` / `passthrough_injector` | Single pieces (normally started by the launch file) |
 
 ## 8. Where to plug in your part
@@ -358,7 +357,6 @@ Not sure which version is right? Ask whoever made the other change.
 |---|---|
 | `ModuleNotFoundError: No module named 'zenoh'` | `pip install --user --break-system-packages eclipse-zenoh` |
 | `No module named 'gz.transport13'` | `sudo apt install -y python3-gz-transport13 python3-gz-msgs10` |
-| `No module named 'PyQt6'` | `sudo apt install -y python3-pyqt6` |
 | `error: externally-managed-environment` (pip) | add `--break-system-packages` |
 | `No module named mesh_common` / `Package 'mesh_protocol' not found` | `cd ~/mars_ws && source install/setup.bash` in that terminal |
 | `[link_model] WARNING: no position yet` | Gazebo isn't running or is paused (press ▶). Check `gz topic -l \| grep pose` |
@@ -390,6 +388,6 @@ More in [`ERRORS.md`](ERRORS.md).
 - [x] Coordinator on an elected leader drone (kill it: another takes over)
 - [x] Mission-control web dashboard (map, routes, held bundles, delivery, late odometry, events, photo, failure controls)
 - [x] Rover photo transfer in chunks with a sha256 check
-- [x] Drones glide to their spots (stepped `set_pose`, 15 m/s, above the terrain)
+- [x] Drones glide to their spots (stepped `set_pose`, up to 15 m/s with gentle speed-up / slow-down, above the terrain)
 - [ ] Drones with real flight physics (multicopter plugin, velocity control). More ideas: [`docs/OPTIMIZATIONS.md`](docs/OPTIMIZATIONS.md)
 - [ ] Final demo: rover enters crater → link lost → mesh ON → both bases connected → corruption on → a drone fails → re-route
