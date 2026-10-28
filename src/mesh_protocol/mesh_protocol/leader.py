@@ -165,11 +165,19 @@ class Coordinator:
 
     def _move(self, pos, now):
         """Hand out drone targets. While both chains work: one drone at a time, in an order that keeps
-        them working. When nothing works yet (fresh deploy): every drone at once, nothing to protect."""
+        them working. When nothing works yet (fresh deploy) or the mesh is OFF (parking): every drone
+        at once, nothing to protect. Parking one at a time would cut off the far drones before their
+        turn: they would never hear their 'fly home' target."""
         for d, deadline in list(self.moving.items()):
             if d in pos and math.dist(pos[d], self.targets[d]) < ARRIVED or now > deadline:
                 del self.moving[d]
-        if self.moving and self.order or not self.order:
+        if not self.order:
+            return
+        if self.mode == "off":
+            for d in list(self.order):
+                self._send(d, pos, now)
+            return
+        if self.moving:
             return
         cur = self._where(pos)
         if not connected(self.terrain, cur, self.drones):
@@ -198,6 +206,11 @@ class Coordinator:
                 self.last_rover = (now, pos["rover"])
         if self.mode == "off" and self.state == "DEPLOYED":
             self.goal, self.chains, self.state, self.reason, self.on_since = dict(self.park), {}, "STANDBY", "mesh switched OFF", None
+            self._queue()
+        elif (self.mode == "off" and not self.order
+              and any(math.dist(self.targets[d], self.park[d]) > ARRIVED for d in self.drones)):
+            # mesh OFF but a drone isn't sent home (e.g. a new leader carried on from a half-parked plan)
+            self.goal = dict(self.park)
             self._queue()
         elif self.mode == "on" and self.state == "STANDBY" and "rover" in pos:
             self._deploy(pos, "mesh switched ON", now)

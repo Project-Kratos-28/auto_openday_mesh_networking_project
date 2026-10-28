@@ -184,3 +184,26 @@ def test_no_reshuffle_while_both_chains_hold():
     st["rover"]["pos"] = [x, 0.0, TERRAIN.ground(x, 0.0)]
     out = c.update(st, 100.0)
     assert out["targets"] == settled
+
+
+def test_mesh_off_sends_every_drone_home_at_once():
+    """Parking one at a time cut the far drone off before its turn: it never heard 'fly home'."""
+    c = Coordinator(TERRAIN, "on")
+    st = statuses(5.0)
+    _settle(c, st, 0.0)                                     # deployed, every drone at its relay spot
+    c.set_mode("off")
+    out = c.update(st, 100.0)
+    assert out["state"] == "STANDBY"
+    for d in DRONES:                                        # all in the FIRST heartbeat after OFF
+        assert abs(out["targets"][d][0] - START_XY[d][0]) < 0.01, d
+
+
+def test_new_leader_in_mesh_off_parks_a_drone_left_out():
+    """A drone that ends up leading itself carries on from a half-parked plan: it must still go home."""
+    c = Coordinator(TERRAIN, "off")
+    relay_spot = [20.0, 0.0, 8.0]
+    c.adopt({"mode": "off", "state": "STANDBY",
+             "targets": {**{d: [*START_XY[d], 3.0] for d in DRONES}, "drone_4": relay_spot}})
+    st = {"drone_4": {"pos": relay_spot, "time": 0.0}}         # alone: hears nobody else
+    out = c.update(st, 0.0)
+    assert abs(out["targets"]["drone_4"][0] - START_XY["drone_4"][0]) < 0.01
