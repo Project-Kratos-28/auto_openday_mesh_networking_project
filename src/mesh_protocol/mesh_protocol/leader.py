@@ -6,10 +6,11 @@ LEASE (2 s) + a random 0-0.5 s, and is the lowest-id drone among the drones it h
 2 s, becomes leader with term + 1. A leader steps down when it hears a higher term, or the same
 term from a lower id, so a split mesh that heals ends up with one leader again.
 """
+import itertools
 import math
 import random
 
-from mesh_common import DRONES, UNITS, START_XY, DRONE_HOVER, RADIO_RANGE, REPLAN_DISTANCE, LEASE
+from mesh_common import DRONES, UNITS, START_XY, DRONE_HOVER, DRONE_SPEED, RADIO_RANGE, LEASE
 from mesh_link_model.planner import plan, link_ok, antenna
 from mesh_protocol.routing import compute_routes
 
@@ -17,7 +18,7 @@ HEARD_WINDOW = 2.0        # s: drones heard this recently take part in an electi
 JITTER = 0.5              # s: random extra wait, so two drones rarely start at once
 LOOK_AHEAD = 3.0          # s: re-place drones if a chain would break within this time
 CHECK_PERIOD = 0.5        # s between chain checks
-MOVE_TIMEOUT = 2.0        # s to wait for a drone to report it reached its target
+MOVE_SLACK = 2.0          # s on top of the flight time to wait for a drone to report it arrived
 ARRIVED = 0.5             # m
 
 
@@ -84,17 +85,26 @@ def connected(terrain, pos, drones=DRONES):
             and reachable(terrain, pos, "rover", "base_b", drones))
 
 
+def assign(spots, here):
+    """Give each spot to a drone so the longest flight (then the total) is as short as possible.
+    spots: [(x, y, z)]; here: {drone: (x, y, z)} with at least len(spots) drones. Returns {drone: spot}."""
+    best = min(itertools.permutations(here, len(spots)),
+               key=lambda ds: (max(math.dist(here[d], s) for d, s in zip(ds, spots)),
+                               sum(math.dist(here[d], s) for d, s in zip(ds, spots))))
+    return dict(zip(best, spots))
+
+
 class Coordinator:
     """Plans from positions REPORTED over the mesh (STATUS bundles), not true positions."""
 
-    def __init__(self, terrain, mode="off"):
-        self.terrain, self.mode = terrain, mode
+    def __init__(self, terrain, mode="off", log=lambda text: None):
+        self.terrain, self.mode, self.log = terrain, mode, log
         self.park = {d: (*START_XY[d], round(terrain.ground(*START_XY[d]) + DRONE_HOVER, 2)) for d in DRONES}
         self.bases = {b: (*START_XY[b], terrain.ground(*START_XY[b])) for b in ("base_a", "base_b")}
         self.targets, self.goal = dict(self.park), dict(self.park)
-        self.order, self.moving = [], None     # drones still to move; (drone, since) in progress
+        self.order, self.moving = [], {}       # drones still to move; drone -> deadline while in flight
         self.chains, self.state, self.reason, self.on_since = {}, "STANDBY", "mesh off", None
-        self.plan_at, self.next_check, self.vel, self.last_rover = None, 0.0, [0.0, 0.0], None
+        self.next_check, self.vel, self.last_rover = 0.0, [0.0, 0.0], None
         self.drones = list(DRONES)             # drones we have a STATUS from (alive and in reach)
 
     def adopt(self, msg):
@@ -127,31 +137,51 @@ class Coordinator:
             return
         if self.state != "DEPLOYED":
             self.on_since = now
-        self.goal, self.chains, self.plan_at = {**self.goal, **new}, ch, pos["rover"]
+        # the planner names drones in list order; re-name so no drone crosses the crater to swap places
+        names = list(new)
+        cur = self._where(pos)
+        got = assign([new[n] for n in names], {d: cur[d] for d in names})
+        owner = {names.index(n): d for d, spot in got.items() for n in names if new[n] is spot}
+        new = {owner[i]: new[n] for i, n in enumerate(names)}
+        ch = {b: [owner[names.index(n)] for n in chain] for b, chain in ch.items()}
+        self.goal, self.chains = {**self.goal, **new}, ch
         self.state, self.reason = "DEPLOYED", why
+        self.log(f"t={now:.1f} plan ({why}): base_a chain {ch.get('base_a')}, base_b chain {ch.get('base_b')}")
         self._queue()
 
     def _queue(self):
         self.order = [d for d in self.drones if math.dist(self.targets[d], self.goal[d]) > ARRIVED]
 
+    def _where(self, pos):
+        """Best guess of where every unit is: drones in flight where they REPORT, the rest at their targets."""
+        return {**pos, **{d: t for d, t in self.targets.items() if d not in self.moving or d not in pos}}
+
+    def _send(self, d, pos, now):
+        self.order.remove(d)
+        start = pos.get(d, self.targets[d])
+        self.log(f"t={now:.1f} fly {d} {math.dist(start, self.goal[d]):.0f} m")
+        self.targets[d] = self.goal[d]
+        self.moving[d] = now + math.dist(start, self.goal[d]) / DRONE_SPEED + MOVE_SLACK
+
     def _move(self, pos, now):
-        """Hand out at most one new drone target at a time, in an order that keeps both chains up."""
-        if self.moving:
-            d, since = self.moving
-            if d in pos and math.dist(pos[d], self.targets[d]) < ARRIVED or now - since > MOVE_TIMEOUT:
-                self.moving = None
-        if self.moving or not self.order:
+        """Hand out drone targets. While both chains work: one drone at a time, in an order that keeps
+        them working. When nothing works yet (fresh deploy): every drone at once, nothing to protect."""
+        for d, deadline in list(self.moving.items()):
+            if d in pos and math.dist(pos[d], self.targets[d]) < ARRIVED or now > deadline:
+                del self.moving[d]
+        if self.moving and self.order or not self.order:
             return
-        cur = {**pos, **self.targets}
-        pick = self.order[0]
-        if connected(self.terrain, cur, self.drones):
-            for d in self.order:
-                if connected(self.terrain, {**cur, d: self.goal[d]}, self.drones):
-                    pick = d
-                    break
-        self.order.remove(pick)
-        self.targets[pick] = self.goal[pick]
-        self.moving = (pick, now)
+        cur = self._where(pos)
+        if not connected(self.terrain, cur, self.drones):
+            for d in list(self.order):
+                self._send(d, pos, now)
+            return
+        # best: a drone the chains don't need while it flies (treated as gone), and fine once there;
+        # else one whose new spot keeps both chains up; else just the next one
+        lands_ok = [d for d in self.order if connected(self.terrain, {**cur, d: self.goal[d]}, self.drones)]
+        spare = [d for d in lands_ok
+                 if connected(self.terrain, cur, [x for x in self.drones if x != d])]
+        self._send((spare or lands_ok or self.order)[0], pos, now)
 
     def update(self, statuses, now):
         """statuses: {unit: {"pos": [x, y, z], "neighbours": [...]}} from units heard recently (a drone
@@ -174,16 +204,14 @@ class Coordinator:
         elif (self.mode == "on" and self.state == "DEPLOYED" and "rover" in pos and not self.order
               and not self.moving and now >= self.next_check):
             self.next_check = now + CHECK_PERIOD
-            cur = {**pos, **self.targets}
+            cur = self._where(pos)
             soon = dict(cur, rover=self._ahead(pos["rover"], LOOK_AHEAD))
             ok_a = all(reachable(self.terrain, p, "rover", "base_a", self.drones) for p in (cur, soon))
             ok_b = all(reachable(self.terrain, p, "rover", "base_b", self.drones) for p in (cur, soon))
-            far = self.plan_at is None or math.dist(self.plan_at[:2], pos["rover"][:2]) > REPLAN_DISTANCE
+            # re-plan only when a chain is about to break: every move is a flight that can open a gap
             if not (ok_a and ok_b):
                 self._deploy(pos, f"chain to {'base_a' if not ok_a else 'base_b'} will break soon", now,
                              lead=LOOK_AHEAD / 2)
-            elif far:
-                self._deploy(pos, f"rover moved {REPLAN_DISTANCE:.0f} m", now, lead=LOOK_AHEAD / 2)
         self._move(pos, now)
         return {"mode": self.mode, "state": self.state, "reason": self.reason, "chains": self.chains,
                 "targets": {d: list(p) for d, p in self.targets.items()}, "on_since": self.on_since,
@@ -193,7 +221,7 @@ class Coordinator:
         """Route table from the link model the leader can work out itself: reported positions (drones at
         the targets it handed out) + range + line of sight over the terrain map. This is right the
         moment a move is ordered; nodes still refuse a next hop they can't hear (mesh_node.next_hop)."""
-        cur = {**pos, **{d: self.targets[d] for d in self.drones}}
+        cur = self._where(pos)
         units = [u for u in UNITS if u in cur and (u not in DRONES or u in self.drones)]
         edges = {}
         for i, u in enumerate(units):

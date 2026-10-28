@@ -33,7 +33,7 @@ GOAL_X = 33.0                 # mission ends when the rover reaches this x (in f
 # ------------------------------------------------------------------ movement (demo scale)
 ROVER_SPEED = 1.0             # m/s, mission default (whole trip ~70 s)
 RELAY_HEIGHTS = (3.0, 6.0, 10.0, 15.0)   # m above ground the planner tries for relay drones
-REPLAN_DISTANCE = 8.0         # m the rover may move before drones are re-placed anyway
+DRONE_SPEED = 15.0            # m/s drones glide at (20 steps a second, mesh_protocol/mover.py)
 
 # ------------------------------------------------------------------ radio
 RADIO_RANGE = 32.0            # metres: further than this = no link (base A <-> base B is 80 m)

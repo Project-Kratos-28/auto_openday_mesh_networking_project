@@ -3,12 +3,12 @@
   ros2 run mesh_protocol selftest
 
 Starts everything on a separate Zenoh port (so it doesn't disturb a running sim), with the
-mesh OFF like a normal start, and drives the fake rover fast (2.5 m/s). Checks:
+mesh OFF like a normal start, and drives the fake rover at demo speed (ROVER_SPEED, 1 m/s). Checks:
   1. start (mesh OFF): a leader drone is elected, base A talks to the rover directly, base B gets nothing
   2. mesh OFF, rover drives into the crater -> base A loses it, nothing deploys
   3. toggle ON -> all 4 drones deploy, base A connected again, base B receives odometry
   4. rover drives on to base B -> odometry flows the whole way, no gaps
-  5. second journey with the mesh ON from the start -> base B gets odometry from the
+  5. second journey (demo speed, 1 m/s) with the mesh ON from the start -> base B gets odometry from the
      first second to the end, base A never loses the rover
   6. the web dashboard streams the state and its toggle works
 """
@@ -23,7 +23,7 @@ import urllib.request
 PORT = "tcp/127.0.0.1:7457"
 os.environ["MESH_HUB"] = PORT                          # must be set before mesh_common is imported
 
-from mesh_common import (UNITS, DRONES, START_XY, CRATER_RADIUS, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,  # noqa: E402
+from mesh_common import (UNITS, DRONES, START_XY, ROVER_SPEED, CRATER_RADIUS, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,  # noqa: E402
                          KEY_COORD_CMD, KEY_MISSION, KEY_FAKE_POSE, KEY_FAKE_CMD_VEL, KEY_FAIL_CONTROL,
                          KEY_PHOTO_B, KEY_PHOTO_CMD,
                          open_session)
@@ -100,6 +100,11 @@ def main():
         pts = [t0] + ts + [t1]
         return max(b - a for a, b in zip(pts, pts[1:]))
 
+    def gap_start(ts, t0, t1):
+        """When the longest gap began (epoch seconds), to find it in the leader's log (t=...)."""
+        pts = [t0] + ts + [t1]
+        return max(zip(pts, pts[1:]), key=lambda p: p[1] - p[0])[0]
+
     try:
         print("Starting link model, radio, injector, 7 mesh nodes (mesh OFF, fake mode)...")
         start("mesh_link_model.link_model", "--fake")
@@ -121,7 +126,7 @@ def main():
               f"(leader {coord('leader')})")
 
         print("\nTest 2: mesh OFF, rover drives into the crater")
-        mission = start("mesh_protocol.mission", "--fake", "--speed", "2.5")
+        mission = start("mesh_protocol.mission", "--fake", "--speed", str(ROVER_SPEED))
         ok = wait_for(lambda: age("acks") is not None and age("acks") > 4, 60)
         with lock:
             x = (st["mission"] or {}).get("x")
@@ -160,7 +165,8 @@ def main():
         g_b = longest_gap(times("odoms", t_flow), t_flow, t_end)
         g_a = longest_gap(times("acks", t_flow), t_flow, t_end)
         check("odometry reached base B the whole way", g_b < MAX_GAP, f"(longest gap {g_b:.1f} s)")
-        check("base A kept its connection", g_a < 2.5, f"(longest ACK gap {g_a:.1f} s)")
+        check("base A kept its connection", g_a < 2.5,
+              f"(longest ACK gap {g_a:.1f} s from t={gap_start(times('acks', t_flow), t_flow, t_end):.1f})")
 
         with lock:
             ages = [m.get("cmd_age_ms") or 0 for m in st["acks"]]
@@ -237,10 +243,13 @@ def main():
         wait_for(lambda: coord("state") == "DEPLOYED", 5)
         ch = coord("chains") or {}
         check("at the start: chains to both bases", "base_b" in ch and len(ch.get("base_b", [])) > 0, f"({ch})")
-        wait_for(lambda: age("odoms") is not None and age("odoms") < 1.0, 8)
+        # the drones fly there (DRONE_SPEED m/s): up to ~85 m from parking to the far end of the chain
+        check("drones flew into place and base B receives odometry",
+              wait_for(lambda: age("odoms") is not None and age("odoms") < 1.0, 20))
         t0 = time.time()
-        mission2 = start("mesh_protocol.mission", "--fake", "--speed", "2.5")
-        ok = wait_for(lambda: mission2.poll() is not None, 150)
+        # demo speed (1 m/s): with flying drones, 2.5 m/s outruns a 4-drone reshuffle, the demo never does
+        mission2 = start("mesh_protocol.mission", "--fake", "--speed", str(ROVER_SPEED))
+        ok = wait_for(lambda: mission2.poll() is not None, 200)
         t1 = time.time()
         with lock:
             mis = st["mission"] or {}
@@ -276,10 +285,12 @@ def main():
         snap = None
         for _ in range(60):                       # it loads the terrain first: allow 30 s
             snap = dash_snapshot()
-            if snap and snap.get("coord"):
+            if snap and snap.get("coord") and snap.get("stats"):     # counters come once a second
                 break
             time.sleep(0.5)
-        check("dashboard streams the mesh state", bool(snap and snap.get("coord") and snap.get("stats")))
+        check("dashboard streams the mesh state", bool(snap and snap.get("coord") and snap.get("stats")),
+              "(no snapshot from the dashboard)" if snap is None else
+              f"(coord {bool(snap.get('coord'))}, stats {len(snap.get('stats') or {})})")
         ok_off = dash_post("/api/mesh", {"on": False}) == 200 and wait_for(lambda: coord("mode") == "off", 8)
         ok_on = dash_post("/api/mesh", {"on": True}) == 200 and wait_for(lambda: coord("mode") == "on", 8)
         check("dashboard toggle switched the mesh OFF and ON", ok_off and ok_on)

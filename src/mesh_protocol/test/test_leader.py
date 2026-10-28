@@ -85,15 +85,14 @@ def test_coordinator_on_chains_both_bases():
     assert out["state"] == "DEPLOYED"
 
 
-def test_coordinator_moves_one_drone_at_a_time():
-    c = Coordinator(TERRAIN, "on")
-    st = statuses(0.0)
-    out = c.update(st, 0.0)
-    moved = [d for d in DRONES if abs(out["targets"][d][0] - START_XY[d][0]) > 0.5]
-    assert len(moved) == 1
-    st[moved[0]]["pos"] = list(out["targets"][moved[0]])     # it got there
-    out = c.update(st, 0.5)
-    assert len([d for d in DRONES if abs(out["targets"][d][0] - START_XY[d][0]) > 0.5]) == 2
+def _settle(c, st, t0):
+    """Run the leader with every drone arriving where it is sent. Returns the last payload."""
+    out = None
+    for i in range(12):
+        out = c.update(st, t0 + i * 0.5)
+        for d in DRONES:
+            st[d]["pos"] = list(out["targets"][d])
+    return out
 
 
 def test_coordinator_skips_silent_drone():
@@ -121,3 +120,67 @@ def test_routes_follow_drone_targets_at_once():
         seen.append(hop)
         hop = r[hop]["rover"]
     assert hop == "rover" and all(h in DRONES for h in seen[1:])
+
+
+def test_deploy_from_nothing_moves_all_drones_at_once():
+    """Nothing connected yet = nothing to protect: all drones fly together."""
+    c = Coordinator(TERRAIN, "on")
+    out = c.update(statuses(0.0), 0.0)
+    moved = [d for d in DRONES if abs(out["targets"][d][0] - START_XY[d][0]) > 0.5]
+    assert len(moved) == 4
+
+
+def test_drone_in_flight_routed_from_where_it_is():
+    """A drone still on its way is not used as a relay at its target yet."""
+    c = Coordinator(TERRAIN, "on")
+    st = statuses(0.0)
+    out = c.update(st, 0.0)                                   # all four told to fly, none moved yet
+    r = out["routes"]
+    assert "rover" not in r["base_a"] and "rover" not in r["base_b"]
+
+
+def test_assign_spots_to_nearest_drones():
+    """A re-plan must not send drones across the crater to swap places: shortest longest-flight wins."""
+    from mesh_protocol.leader import assign
+    spots = [(0.0, 0.0, 5.0), (20.0, 0.0, 5.0), (40.0, 0.0, 5.0)]
+    here = {"drone_1": (41.0, 0.0, 5.0), "drone_2": (19.0, 0.0, 5.0), "drone_3": (1.0, 0.0, 5.0)}
+    got = assign(spots, here)
+    assert got == {"drone_3": spots[0], "drone_2": spots[1], "drone_1": spots[2]}
+
+
+class FlatTerrain:
+    """No hills: only the 32 m radio range decides links."""
+    def ground(self, x, y):
+        return 0.0
+
+    def line_of_sight(self, a, b, clearance=0.5, step=1.0):
+        return True
+
+
+def test_moves_a_spare_drone_before_one_the_chain_needs():
+    """While both chains work, drones move one at a time, and a drone in flight is treated as gone:
+    first move one whose absence keeps both chains up."""
+    c = Coordinator(FlatTerrain(), "on")
+    pos = {"rover": (0.0, 0.0, 0.0), "base_a": (-40.0, 0.0, 0.0), "base_b": (40.0, 0.0, 0.0),
+           "drone_1": (-20.0, 0.0, 3.0), "drone_2": (20.0, 0.0, 3.0),
+           "drone_3": (-50.0, 0.0, 3.0), "drone_4": (50.0, 0.0, 3.0)}
+    c.targets = {d: pos[d] for d in DRONES}
+    c.goal = dict(c.targets, drone_1=(-19.0, 0.0, 3.0), drone_3=(-22.0, 0.0, 3.0))
+    c.order, c.drones = ["drone_1", "drone_3"], list(DRONES)
+    c._move(pos, 0.0)
+    assert list(c.moving) == ["drone_3"]                     # drone_1 carries base A's link: not first
+
+
+def test_no_reshuffle_while_both_chains_hold():
+    """Flying costs a relay gap, so the leader only re-plans when a chain is about to break,
+    not every time the rover has moved a few metres."""
+    c = Coordinator(TERRAIN, "on")
+    st = statuses(0.0)
+    from mesh_protocol.leader import connected
+    settled = _settle(c, st, 0.0)["targets"]
+    pos = {**{u: tuple(v["pos"]) for u, v in st.items()}, **{d: tuple(p) for d, p in settled.items()}}
+    x = next(x for x in (12.0, 11.0, 10.0, 9.0)         # > 8 m on, both chains still fine
+             if connected(TERRAIN, dict(pos, rover=(x, 0.0, TERRAIN.ground(x, 0.0)))))
+    st["rover"]["pos"] = [x, 0.0, TERRAIN.ground(x, 0.0)]
+    out = c.update(st, 100.0)
+    assert out["targets"] == settled

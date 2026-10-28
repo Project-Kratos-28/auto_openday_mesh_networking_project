@@ -27,7 +27,7 @@ import time
 from collections import OrderedDict
 
 from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED, SEND_RATE, LATE_AFTER,
-                         LEASE, KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD,
+                         LEASE, DRONE_SPEED, KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD,
                          KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO_B, KEY_PHOTO_CMD, key_tx, key_rx, key_stats,
                          make_packet, encode, decode, expired, bundle_id, open_session)
 from mesh_link_model.sim_io import teleport
@@ -88,8 +88,12 @@ class MeshNode:
         if self.is_drone:
             from mesh_link_model.terrain import Terrain
             from mesh_protocol.leader import Coordinator
-            self.coord = Coordinator(Terrain.load(), mesh)
-            self.mover = Mover(lambda x, y, z: teleport(unit, x, y, z, fake=fake, session=self.session))
+            terrain = Terrain.load()
+            self.coord = Coordinator(terrain, mesh, log=self.log)
+            # glide to targets (DRONE_SPEED m/s, 20 steps a second), at least 2 m above the ground
+            self.mover = Mover(lambda x, y, z: teleport(unit, x, y, z, fake=fake, session=self.session),
+                               get_pos=lambda: self.pos, speed=DRONE_SPEED, period=0.05,
+                               floor=terrain.ground)
         self.session = session or open_session()
         s = self.session
         self.pub_tx = s.declare_publisher(key_tx(unit))
