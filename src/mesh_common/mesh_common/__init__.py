@@ -67,6 +67,9 @@ KEY_FAIL_CONTROL = "mesh/failure/control"
 KEY_FAIL_EVENTS = "mesh/failure/events"
 KEY_FAKE_POSE = "mesh/fake/pose"               # fake mode only: teleport a unit
 KEY_FAKE_CMD_VEL = "mesh/fake/cmd_vel"         # fake mode only: rover wheel command
+KEY_EVENTS = "mesh/events"                     # every node -> dashboard: one notable event each
+KEY_PHOTO_B = "mesh/base_b/photo"              # base B -> dashboard: photo progress / image
+KEY_PHOTO_CMD = "mesh/base_b/photo_cmd"        # dashboard -> base B: take a photo
 
 # All our programs meet at one local "hub" address (the link model). Only 127.0.0.1,
 # multicast off: we never talk to teammates' laptops on hostel Wi-Fi, and IPv4 avoids
@@ -95,15 +98,43 @@ def open_session(hub=False):
 
 
 # ------------------------------------------------------------------ packets
-TYPES = ("TELEMETRY", "COMMAND", "ACK", "HELLO")
+# v3 = DTN "bundles": every packet has a lifetime and a priority; routed ones go hop by hop
+# with custody transfer (see docs/V3_CHANGES.md).
+TYPES = ("HELLO", "CUSTODY_ACK", "COMMAND", "ACK", "TELEMETRY", "PHOTO_REQ", "PHOTO_CHUNK",
+         "STATUS", "LEADER", "MESH_CMD")
+FLOODED = ("STATUS", "LEADER", "MESH_CMD")     # control: flooded with duplicate filter, no custody
+ROUTED = ("COMMAND", "ACK", "TELEMETRY", "PHOTO_REQ", "PHOTO_CHUNK")   # custody transfer
 BROADCAST = "*"
-REQUIRED = ("src", "dst", "next_hop", "seq", "ttl", "path", "type", "sent_time", "payload")
+REQUIRED = ("src", "dst", "next_hop", "seq", "ttl", "path", "type", "sent_time", "payload",
+            "lifetime", "priority")
+# seconds a bundle lives after sent_time. COMMAND < the rover's 2 s watchdog: never act on old orders
+LIFETIME = {"HELLO": 2, "CUSTODY_ACK": 2, "COMMAND": 1.0, "ACK": 2, "TELEMETRY": 120, "PHOTO_REQ": 10,
+            "PHOTO_CHUNK": 300, "STATUS": 2, "LEADER": 2, "MESH_CMD": 10}
+PRIORITY = {t: 0 for t in TYPES}               # 0 expedited, 1 normal, 2 bulk
+PRIORITY.update(TELEMETRY=1, PHOTO_CHUNK=2)
+SEND_RATE = 40          # bundles a node may send per second (makes priority matter)
+STORE_LIMIT = 500       # bundles a node can hold
+RTO_START = 0.3         # s before the first resend; doubles each try
+RTO_MAX = 2.0           # s, longest wait between resends
+MAX_TRIES = 5           # tries to one next hop before looking the route up again
+LEASE = 2.0             # s a leader's heartbeat stays valid
+LATE_AFTER = 1.0        # s: odometry older than this on arrival is marked late
 
 
-def make_packet(src, dst, seq, ptype, payload, ttl=8):
-    """Build a new packet (dict). It gets its crc32 when encoded."""
-    return {"src": src, "dst": dst, "next_hop": BROADCAST, "seq": seq, "ttl": ttl,
-            "path": [src], "type": ptype, "sent_time": time.time(), "payload": payload}
+def make_packet(src, dst, seq, ptype, payload, ttl=8, next_hop=BROADCAST):
+    """Build a new bundle (dict). It gets its crc32 when encoded."""
+    return {"src": src, "dst": dst, "next_hop": next_hop, "seq": seq, "ttl": ttl,
+            "path": [src], "type": ptype, "sent_time": time.time(), "payload": payload,
+            "lifetime": LIFETIME[ptype], "priority": PRIORITY[ptype]}
+
+
+def bundle_id(pkt):
+    """A bundle's identity: (src, type, seq)."""
+    return (pkt["src"], pkt["type"], pkt["seq"])
+
+
+def expired(pkt, now):
+    return now > pkt["sent_time"] + pkt["lifetime"]
 
 
 def _crc(pkt):
@@ -135,6 +166,7 @@ def decode(data):
         return None, "bad_format"
     if any(k not in pkt for k in REQUIRED) or pkt["type"] not in TYPES \
             or not isinstance(pkt["path"], list) or not isinstance(pkt["ttl"], int) \
-            or not isinstance(pkt["payload"], dict):
+            or not isinstance(pkt["payload"], dict) or not isinstance(pkt["priority"], int) \
+            or not isinstance(pkt["lifetime"], (int, float)) or not isinstance(pkt["sent_time"], (int, float)):
         return None, "bad_format"
     return pkt, None
