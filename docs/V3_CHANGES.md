@@ -18,7 +18,7 @@ stop after any step: each one leaves a working demo.
 |---|---|---|---|
 | 1 | DTN protocol: custody, store, expiry, priority, routes | done | routes computed by the old coordinator process (until step 3). Self-test 26/26 in fake mode |
 | 2 | Web dashboard (`mesh_dashboard`), PyQt GUI removed | done | `ros2 run mesh_dashboard dashboard` → http://localhost:8080. Self-test 28/28 |
-| 3 | Coordinator on a drone (election), old coordinator process removed | todo | |
+| 3 | Coordinator on a drone (election), old coordinator process removed | done | Self-test 34/34 incl. leader kill + takeover |
 | 4 | Photo transfer | todo | |
 | 5 | README / RELAY_DEMO updated for v3 | todo | |
 

@@ -24,7 +24,6 @@ setup(
             'send_cmd = mesh_protocol.tools:send_cmd',
             'mesh_monitor = mesh_protocol.tools:mesh_monitor',
             'selftest = mesh_protocol.selftest:main',
-            'coordinator = mesh_protocol.coordinator:main',
             'mission = mesh_protocol.mission:main',
             'mesh_ctl = mesh_protocol.tools:mesh_ctl'
         ],

@@ -1,0 +1,205 @@
+"""The coordinator, now inside the drones: a lease-based leader election, and the leader's job
+(where the drones go, and the route table). Pure logic, no Zenoh (test/test_leader.py).
+
+Election: the leader floods a LEADER heartbeat every 0.5 s. A drone that hears no valid one for
+LEASE (2 s) + a random 0-0.5 s, and is the lowest-id drone among the drones it heard in the last
+2 s, becomes leader with term + 1. A leader steps down when it hears a higher term, or the same
+term from a lower id, so a split mesh that heals ends up with one leader again.
+"""
+import math
+import random
+
+from mesh_common import DRONES, UNITS, START_XY, DRONE_HOVER, RADIO_RANGE, REPLAN_DISTANCE, LEASE
+from mesh_link_model.planner import plan, link_ok, antenna
+from mesh_protocol.routing import compute_routes
+
+HEARD_WINDOW = 2.0        # s: drones heard this recently take part in an election
+JITTER = 0.5              # s: random extra wait, so two drones rarely start at once
+LOOK_AHEAD = 3.0          # s: re-place drones if a chain would break within this time
+CHECK_PERIOD = 0.5        # s between chain checks
+MOVE_TIMEOUT = 2.0        # s to wait for a drone to report it reached its target
+ARRIVED = 0.5             # m
+
+
+class Election:
+    def __init__(self, unit, now, rng=random):
+        self.unit, self.rng = unit, rng
+        self.leader, self.term, self.is_leader = None, 0, False
+        self.leader_seen = now                 # last valid LEADER heard from another drone
+        self.heard = {}                        # drone -> time of its last STATUS
+        self.jitter = rng.uniform(0, JITTER)
+
+    @staticmethod
+    def _key(leader, term):
+        return (term, -DRONES.index(leader))   # higher term wins, then the lower id
+
+    def on_status(self, src, now):
+        if src in DRONES:
+            self.heard[src] = now
+
+    def on_leader(self, msg, now):
+        """A LEADER heartbeat from another drone."""
+        lead, term = msg.get("leader"), msg.get("term")
+        if lead == self.unit or lead not in DRONES or not isinstance(term, int):
+            return
+        mine = self._key(self.leader, self.term) if self.leader else None
+        lease_over = now - self.leader_seen > LEASE
+        if mine is None or self._key(lead, term) >= mine or (not self.is_leader and lease_over):
+            self.leader, self.term, self.leader_seen = lead, term, now
+            self.is_leader = False
+
+    def tick(self, now):
+        """True when this drone has just become leader."""
+        if self.is_leader or now - self.leader_seen <= LEASE + self.jitter:
+            return False
+        alive = {d for d, t in self.heard.items() if now - t < HEARD_WINDOW} | {self.unit}
+        if min(alive, key=DRONES.index) != self.unit:
+            return False
+        self.term += 1
+        self.leader, self.is_leader, self.leader_seen = self.unit, True, now
+        self.jitter = self.rng.uniform(0, JITTER)
+        return True
+
+
+# ---------------------------------------------------------------- the leader's job
+def reachable(terrain, pos, start, goal, relays):
+    """Is there a path start -> goal that only uses `relays` in between?"""
+    todo, seen = [start], {start}
+    while todo:
+        u = todo.pop()
+        for v in list(relays) + [goal]:
+            if v in seen or v not in pos:
+                continue
+            if link_ok(terrain, antenna(u, pos[u]), antenna(v, pos[v])):
+                if v == goal:
+                    return True
+                seen.add(v)
+                todo.append(v)
+    return False
+
+
+def connected(terrain, pos, drones=DRONES):
+    """True if the rover can reach BOTH bases through `drones`."""
+    return (reachable(terrain, pos, "rover", "base_a", drones)
+            and reachable(terrain, pos, "rover", "base_b", drones))
+
+
+class Coordinator:
+    """Plans from positions REPORTED over the mesh (STATUS bundles), not true positions."""
+
+    def __init__(self, terrain, mode="off"):
+        self.terrain, self.mode = terrain, mode
+        self.park = {d: (*START_XY[d], round(terrain.ground(*START_XY[d]) + DRONE_HOVER, 2)) for d in DRONES}
+        self.bases = {b: (*START_XY[b], terrain.ground(*START_XY[b])) for b in ("base_a", "base_b")}
+        self.targets, self.goal = dict(self.park), dict(self.park)
+        self.order, self.moving = [], None     # drones still to move; (drone, since) in progress
+        self.chains, self.state, self.reason, self.on_since = {}, "STANDBY", "mesh off", None
+        self.plan_at, self.next_check, self.vel, self.last_rover = None, 0.0, [0.0, 0.0], None
+        self.drones = list(DRONES)             # drones we have a STATUS from (alive and in reach)
+
+    def adopt(self, msg):
+        """A new leader carries on from the last heartbeat it heard."""
+        self.mode = msg.get("mode", self.mode)
+        if msg.get("targets"):
+            self.targets = {d: tuple(p) for d, p in msg["targets"].items()}
+            self.goal = dict(self.targets)
+        self.chains, self.state = msg.get("chains", {}), msg.get("state", self.state)
+        self.on_since = msg.get("on_since")
+
+    def set_mode(self, mode):
+        if mode in ("on", "off"):
+            self.mode = mode
+
+    def _ahead(self, p, t):
+        x, y = p[0] + self.vel[0] * t, p[1] + self.vel[1] * t
+        return (x, y, self.terrain.ground(x, y))
+
+    def _deploy(self, pos, why, now, lead=0.0):
+        new = ch = None
+        if lead > 0:                                   # plan for slightly ahead first
+            new, ch = plan(self.terrain, dict(pos, rover=self._ahead(pos["rover"], lead)), self.drones)
+            if new is not None and not connected(self.terrain, {**pos, **new}, self.drones):
+                new = None                             # it must also work where the rover is NOW
+        if new is None:
+            new, ch = plan(self.terrain, pos, self.drones)
+        if new is None:
+            self.reason = f"cannot plan: {ch}"
+            return
+        if self.state != "DEPLOYED":
+            self.on_since = now
+        self.goal, self.chains, self.plan_at = {**self.goal, **new}, ch, pos["rover"]
+        self.state, self.reason = "DEPLOYED", why
+        self._queue()
+
+    def _queue(self):
+        self.order = [d for d in self.drones if math.dist(self.targets[d], self.goal[d]) > ARRIVED]
+
+    def _move(self, pos, now):
+        """Hand out at most one new drone target at a time, in an order that keeps both chains up."""
+        if self.moving:
+            d, since = self.moving
+            if d in pos and math.dist(pos[d], self.targets[d]) < ARRIVED or now - since > MOVE_TIMEOUT:
+                self.moving = None
+        if self.moving or not self.order:
+            return
+        cur = {**pos, **self.targets}
+        pick = self.order[0]
+        if connected(self.terrain, cur, self.drones):
+            for d in self.order:
+                if connected(self.terrain, {**cur, d: self.goal[d]}, self.drones):
+                    pick = d
+                    break
+        self.order.remove(pick)
+        self.targets[pick] = self.goal[pick]
+        self.moving = (pick, now)
+
+    def update(self, statuses, now):
+        """statuses: {unit: {"pos": [x, y, z], "neighbours": [...]}} from units heard recently (a drone
+        missing here is treated as dead). Returns the LEADER payload."""
+        pos = {u: tuple(s["pos"]) for u, s in statuses.items() if s.get("pos")}
+        pos.update(self.bases)
+        self.drones = [d for d in DRONES if d in statuses]
+        if "rover" in pos:                             # rover speed from successive reports
+            if self.last_rover and now - self.last_rover[0] > 0.2:
+                dt = now - self.last_rover[0]
+                for i in (0, 1):
+                    self.vel[i] = 0.5 * self.vel[i] + 0.5 * (pos["rover"][i] - self.last_rover[1][i]) / dt
+            if self.last_rover is None or now - self.last_rover[0] > 0.2:
+                self.last_rover = (now, pos["rover"])
+        if self.mode == "off" and self.state == "DEPLOYED":
+            self.goal, self.chains, self.state, self.reason, self.on_since = dict(self.park), {}, "STANDBY", "mesh switched OFF", None
+            self._queue()
+        elif self.mode == "on" and self.state == "STANDBY" and "rover" in pos:
+            self._deploy(pos, "mesh switched ON", now)
+        elif (self.mode == "on" and self.state == "DEPLOYED" and "rover" in pos and not self.order
+              and not self.moving and now >= self.next_check):
+            self.next_check = now + CHECK_PERIOD
+            cur = {**pos, **self.targets}
+            soon = dict(cur, rover=self._ahead(pos["rover"], LOOK_AHEAD))
+            ok_a = all(reachable(self.terrain, p, "rover", "base_a", self.drones) for p in (cur, soon))
+            ok_b = all(reachable(self.terrain, p, "rover", "base_b", self.drones) for p in (cur, soon))
+            far = self.plan_at is None or math.dist(self.plan_at[:2], pos["rover"][:2]) > REPLAN_DISTANCE
+            if not (ok_a and ok_b):
+                self._deploy(pos, f"chain to {'base_a' if not ok_a else 'base_b'} will break soon", now,
+                             lead=LOOK_AHEAD / 2)
+            elif far:
+                self._deploy(pos, f"rover moved {REPLAN_DISTANCE:.0f} m", now, lead=LOOK_AHEAD / 2)
+        self._move(pos, now)
+        return {"mode": self.mode, "state": self.state, "reason": self.reason, "chains": self.chains,
+                "targets": {d: list(p) for d, p in self.targets.items()}, "on_since": self.on_since,
+                "routes": self.routes(statuses, pos)}
+
+    def routes(self, statuses, pos):
+        """Route table from the link model the leader can work out itself: reported positions (drones at
+        the targets it handed out) + range + line of sight over the terrain map. This is right the
+        moment a move is ordered; nodes still refuse a next hop they can't hear (mesh_node.next_hop)."""
+        cur = {**pos, **{d: self.targets[d] for d in self.drones}}
+        units = [u for u in UNITS if u in cur and (u not in DRONES or u in self.drones)]
+        edges = {}
+        for i, u in enumerate(units):
+            for v in units[i + 1:]:
+                a, b = antenna(u, cur[u]), antenna(v, cur[v])
+                if link_ok(self.terrain, a, b):
+                    edges[(u, v)] = round(max(0.0, 1 - math.dist(a, b) / RADIO_RANGE), 2)
+        relays = self.drones + ["rover"] if self.state == "DEPLOYED" else []
+        return compute_routes(edges, UNITS, relays)

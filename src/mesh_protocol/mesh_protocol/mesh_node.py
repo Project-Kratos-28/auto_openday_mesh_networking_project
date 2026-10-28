@@ -20,14 +20,17 @@ DTN rules (docs/V3_CHANGES.md):
 """
 import argparse
 import json
+import math
 import threading
 import time
 from collections import OrderedDict
 
-from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, SEND_RATE, LATE_AFTER,
-                         KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,
+from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED, SEND_RATE, LATE_AFTER,
+                         LEASE, KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD,
                          KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, key_tx, key_rx, key_stats,
                          make_packet, encode, decode, expired, bundle_id, open_session)
+from mesh_link_model.sim_io import teleport
+from mesh_protocol.leader import Election
 from mesh_protocol.store import BundleStore
 
 NEIGHBOUR_TIMEOUT = 1.5        # seconds without HELLO -> neighbour gone
@@ -35,10 +38,13 @@ HELLO_PERIOD = 0.5
 SEEN_MEMORY = 5000             # bundle ids remembered by the duplicate filter
 WATCHDOG = 2.0                 # rover stops if no drive command for this long
 PING_PERIOD = 1.0              # base_a pings the rover this often when idle
+STATUS_PERIOD = 0.5            # every unit reports position + neighbours this often
+STATUS_FRESH = 2.0             # s: a drone with an older STATUS is left out of the plan (dead)
+LEADER_PERIOD = 0.5            # leader heartbeat
 
 
 class MeshNode:
-    def __init__(self, unit, ttl=8, fake=False, telemetry_period=0.5, session=None):
+    def __init__(self, unit, ttl=8, fake=False, telemetry_period=0.5, session=None, mesh="off"):
         self.unit, self.ttl, self.fake = unit, ttl, fake
         self.is_drone = unit.startswith("drone")
         self.telemetry_period = telemetry_period
@@ -59,20 +65,31 @@ class MeshNode:
         self.last_drive = 0.0                           # rover: time of last drive command
         self.moving = False
         self.last_cmd_sent = 0.0                        # base_a
+        self.pos = None                                 # own position (like GPS), from the simulation
+        self.statuses = {}                              # unit -> {"pos", "neighbours", "time"} (STATUS)
+        self.last_leader = None                         # newest LEADER payload we follow (+ "time")
+        self.election = Election(unit, time.time())     # drones elect; everyone uses it to pick a leader
+        self.want_mode = None                           # base_a: mesh mode asked for, until a LEADER shows it
+        self.teleported_to = None                       # drones: last target we moved to
+        if self.is_drone:
+            from mesh_link_model.terrain import Terrain
+            from mesh_protocol.leader import Coordinator
+            self.coord = Coordinator(Terrain.load(), mesh)
         self.session = session or open_session()
         s = self.session
         self.pub_tx = s.declare_publisher(key_tx(unit))
         self.pub_stats = s.declare_publisher(key_stats(unit))
         self.pub_events = s.declare_publisher(KEY_EVENTS)
         self.subs = [s.declare_subscriber(key_rx(unit), self.on_rx),
-                     s.declare_subscriber(KEY_COORD_STATE, self.on_coord),
+                     s.declare_subscriber(KEY_POSITIONS, self.on_positions),
                      s.declare_subscriber(KEY_FAIL_CONTROL, self.on_failure)]
         if unit == "rover":
-            self.subs.append(s.declare_subscriber(KEY_POSITIONS, self.on_positions))
             self._setup_gazebo()
         if unit == COMMANDER:
             self.pub_acks = s.declare_publisher(KEY_ACKS_A)
+            self.pub_coord = s.declare_publisher(KEY_COORD_STATE)
             self.subs.append(s.declare_subscriber(KEY_CMD_A, self.on_cmd_request))
+            self.subs.append(s.declare_subscriber(KEY_COORD_CMD, self.on_mesh_request))
         if unit == RECEIVER:
             self.pub_odom = s.declare_publisher(KEY_ODOM_B)
         role = {"rover": "rover", COMMANDER: "commander base", RECEIVER: "receiver base"}.get(unit, "relay drone")
@@ -204,6 +221,8 @@ class MeshNode:
         """Apply the receive rules to one good bundle. Returns the bundles to send right away."""
         if self.killed:
             return []
+        if pkt["type"] in FLOODED:
+            return self._flood(pkt, now)
         deliver = None
         with self.lock:
             self.stats["received"] += 1
@@ -274,19 +293,85 @@ class MeshNode:
             self.log(f"{pkt['type']} #{pkt['seq']} from {pkt['src']} via {' -> '.join(route)}")
 
     # -------------------------------------------------------------- other inputs
-    def on_coord(self, sample):
-        """Route table from the coordinator."""
-        try:
-            routes = json.loads(sample.payload.to_bytes()).get("routes", {}).get(self.unit, {})
-        except Exception:
-            return
+    # -------------------------------------------------------------- control (flooded) bundles
+    def _flood(self, pkt, now):
+        """STATUS / LEADER / MESH_CMD: duplicate filter, act on it, pass it on (no custody).
+
+        EVERY unit passes control floods on: the rover links the two drone chains and the bases sit next
+        to parked drones, so the drones never split into two groups that each elect a leader."""
         with self.lock:
+            self.stats["received"] += 1
+            if pkt["src"] == self.unit or self.unit in pkt["path"] or expired(pkt, now):
+                return []
+            if not self._remember(bundle_id(pkt)):
+                self.stats["duplicates"] += 1
+                return []
+            fwd = []
+            if pkt["ttl"] > 1:
+                fwd = [dict(pkt, ttl=pkt["ttl"] - 1, path=pkt["path"] + [self.unit])]
+                self.stats["forwarded"] += 1
+        self.on_control(pkt, now)
+        return fwd
+
+    def on_control(self, pkt, now):
+        t, p, src = pkt["type"], pkt["payload"], pkt["src"]
+        if t == "STATUS":
+            with self.lock:
+                self.statuses[src] = dict(p, time=now)
+            self.election.on_status(src, now)
+        elif t == "LEADER":
+            was = self.election.is_leader
+            self.election.on_leader(p, now)
+            if was and not self.election.is_leader:
+                self.log(f"stepping down: {p.get('leader')} leads (term {p.get('term')})")
+            if self.election.leader == p.get("leader") and self.election.term == p.get("term"):
+                self._apply_leader(p, pkt["sent_time"])
+        elif t == "MESH_CMD" and self.is_drone and self.election.is_leader:
+            if p.get("mode") in ("on", "off") and p["mode"] != self.coord.mode:
+                self.log(f"mesh {p['mode'].upper()} (asked by {src})")
+                self.coord.set_mode(p["mode"])
+
+    def _apply_leader(self, p, sent):
+        """Follow the leader: its route table, and (drones) the target it gave us."""
+        with self.lock:
+            routes = p.get("routes", {}).get(self.unit, {})
             changed = routes != self.routes
-            self.routes = routes
+            self.routes, self.last_leader = routes, dict(p, time=sent)
             if changed:
                 self.store.kick(None)
         if changed:
             self.event("route_change", routes=routes)
+        if self.is_drone and not self.killed:
+            target = (p.get("targets") or {}).get(self.unit)
+            if target and self.pos and math.dist(target, self.pos) > 0.5 and target != self.teleported_to:
+                self.teleported_to = target
+                teleport(self.unit, *target, fake=self.fake, session=self.session)
+        if self.unit == COMMANDER:
+            self.pub_coord.put(json.dumps(dict(p, time=sent, relay=p.get("state") == "DEPLOYED")))
+            if self.want_mode == p.get("mode"):
+                self.want_mode = None
+
+    def _lead(self, now):
+        """Drones, every loop: run the election; the leader plans and floods its heartbeat every
+        LEADER_PERIOD (and at once when it has just been elected)."""
+        if self.election.tick(now):
+            self.log(f"I am the LEADER now (term {self.election.term})")
+            self.event("election", term=self.election.term)
+            if self.last_leader:
+                self.coord.adopt(self.last_leader)
+            self.next_lead = 0.0
+        if not self.election.is_leader or now < self.next_lead:
+            return
+        self.next_lead = now + LEADER_PERIOD
+        with self.lock:
+            fresh = {u: st for u, st in self.statuses.items()
+                     if u == "rover" or now - st["time"] < STATUS_FRESH}
+            fresh[self.unit] = {"pos": self.pos, "neighbours": sorted(self._alive(now)), "time": now}
+        if not fresh[self.unit]["pos"]:
+            return
+        msg = dict(self.coord.update(fresh, now), leader=self.unit, term=self.election.term, lease=LEASE)
+        self.originate(BROADCAST, "LEADER", msg)
+        self._apply_leader(msg, now)                   # the leader follows its own orders too
 
     def on_failure(self, sample):
         try:
@@ -304,8 +389,18 @@ class MeshNode:
 
     def on_positions(self, sample):
         m = json.loads(sample.payload.to_bytes())
-        if "rover" in m["positions"]:
+        self.pos = m["positions"].get(self.unit, self.pos)
+        if self.unit == "rover" and "rover" in m["positions"]:
             self.truth = {"pos": m["positions"]["rover"], "yaw": m.get("yaw", {}).get("rover")}
+
+    def on_mesh_request(self, sample):
+        """base_a: mesh ON/OFF from the dashboard or mesh_ctl -> MESH_CMD, repeated until a LEADER shows it."""
+        mode = sample.payload.to_string().strip().strip('"').lower()
+        if mode in ("on", "off"):
+            self.want_mode = mode
+            self.next_mesh_cmd = 0.0
+        else:
+            self.log(f"ignored mesh command '{mode}' (v3 knows on / off; auto was removed)")
 
     def on_cmd_request(self, sample):
         """base_a: a velocity command from the mission / GUI -> COMMAND bundle."""
@@ -319,7 +414,8 @@ class MeshNode:
 
     # -------------------------------------------------------------- main loop
     def run(self):
-        next_hello = next_telem = next_stats = time.time()
+        next_hello = next_telem = next_stats = next_status = time.time()
+        self.next_mesh_cmd = self.next_lead = 0.0
         known, battery = set(), 100.0
         try:
             while True:
@@ -338,6 +434,17 @@ class MeshNode:
                                        {"odom": self.odom, "truth": self.truth,
                                         "moving": self.moving, "battery": round(battery, 2)})
                         next_telem = now + self.telemetry_period
+                if now >= next_status and not self.killed:
+                    st = {"pos": self.pos, "neighbours": sorted(self._alive(now))}
+                    with self.lock:
+                        self.statuses[self.unit] = dict(st, time=now)
+                    self.originate(BROADCAST, "STATUS", st)
+                    next_status = now + STATUS_PERIOD
+                if self.is_drone and not self.killed:
+                    self._lead(now)
+                if self.unit == COMMANDER and self.want_mode and now >= self.next_mesh_cmd:
+                    self.originate(BROADCAST, "MESH_CMD", {"mode": self.want_mode})
+                    self.next_mesh_cmd = now + 1.0
                 if self.unit == COMMANDER and now - self.last_cmd_sent > PING_PERIOD:
                     self.originate("rover", "COMMAND", {"ping": True})
                     self.last_cmd_sent = now
@@ -346,7 +453,8 @@ class MeshNode:
                     with self.lock:
                         nb = sorted(self._alive(now))
                         stats = dict(self.stats, held=self.store.held(), neighbours=nb, routes=self.routes,
-                                     killed=self.killed, leader=None, term=None, time=now)
+                                     killed=self.killed, leader=self.election.leader,
+                                     term=self.election.term, time=now)
                     self.pub_stats.put(json.dumps(stats))
                     if set(nb) != known:
                         self.log(f"neighbours: {nb if nb else 'NONE'}")
@@ -365,9 +473,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--unit", required=True, choices=UNITS)
     ap.add_argument("--ttl", type=int, default=8, help="max hops a bundle may travel")
-    ap.add_argument("--fake", action="store_true", help="fake rover (no Gazebo)")
+    ap.add_argument("--fake", action="store_true", help="fake mode (no Gazebo)")
+    ap.add_argument("--mesh", choices=("on", "off"), default="off", help="drones: mesh mode at start")
     args, _ = ap.parse_known_args()
-    MeshNode(args.unit, ttl=args.ttl, fake=args.fake).run()
+    MeshNode(args.unit, ttl=args.ttl, fake=args.fake, mesh=args.mesh).run()
 
 
 if __name__ == "__main__":

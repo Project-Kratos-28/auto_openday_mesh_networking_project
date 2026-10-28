@@ -172,3 +172,22 @@ def test_route_through_live_hop_used():
     n.neighbours["drone_3"] = now - 0.2
     n.routes = {"rover": "drone_3"}
     assert n.next_hop("rover", now) == "drone_3"
+
+
+def leader_flood(src="drone_1", seq=1):
+    p = make_packet(src, "*", seq, "LEADER", {"leader": src, "term": 1, "routes": {}, "targets": {}})
+    return decode(encode(p))[0]
+
+
+def test_rover_passes_on_control_floods():
+    """The rover links the two drone chains, so control traffic (one leader for everyone) must cross it."""
+    n, _ = node("rover")
+    out = n.handle(leader_flood(), time.time())
+    assert [(o["type"], o["path"]) for o in out] == [("LEADER", ["drone_1", "rover"])]
+
+
+def test_control_flood_passed_on_once():
+    n, _ = node("base_a")
+    p = leader_flood()
+    assert len(n.handle(p, time.time())) == 1
+    assert n.handle(p, time.time()) == []

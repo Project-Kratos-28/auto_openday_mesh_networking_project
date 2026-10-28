@@ -4,7 +4,7 @@
 
 Starts everything on a separate Zenoh port (so it doesn't disturb a running sim), with the
 mesh OFF like a normal start, and drives the fake rover fast (2.5 m/s). Checks:
-  1. start (mesh OFF): base A talks to the rover directly, base B gets nothing
+  1. start (mesh OFF): a leader drone is elected, base A talks to the rover directly, base B gets nothing
   2. mesh OFF, rover drives into the crater -> base A loses it, nothing deploys
   3. toggle ON -> all 4 drones deploy, base A connected again, base B receives odometry
   4. rover drives on to base B -> odometry flows the whole way, no gaps
@@ -100,14 +100,13 @@ def main():
         return max(b - a for a, b in zip(pts, pts[1:]))
 
     try:
-        print("Starting link model, radio, injector, 7 mesh nodes, coordinator (mesh OFF, fake rover)...")
+        print("Starting link model, radio, injector, 7 mesh nodes (mesh OFF, fake mode)...")
         start("mesh_link_model.link_model", "--fake")
         time.sleep(1.5)
         start("mesh_link_model.radio_channel")
         start("mesh_link_model.passthrough_injector")
         for u in UNITS:
-            start("mesh_protocol.mesh_node", "--unit", u, *(["--fake"] if u == "rover" else []))
-        start("mesh_protocol.coordinator", "--fake", "--start", "off")
+            start("mesh_protocol.mesh_node", "--unit", u, "--fake", "--mesh", "off")
         s = open_session()
         subs = [s.declare_subscriber(KEY_ACKS_A, rec("acks")), s.declare_subscriber(KEY_ODOM_B, rec("odoms")),  # noqa
                 s.declare_subscriber(KEY_COORD_STATE, rec("coord")), s.declare_subscriber(KEY_MISSION, rec("mission")),
@@ -116,8 +115,9 @@ def main():
         print("\nTest 1: start, mesh OFF")
         check("base A talks to the rover directly", wait_for(lambda: age("acks") is not None and age("acks") < 1.5, 20))
         check("base B receives nothing", len(st["odoms"]) == 0)
-        check("coordinator: mode OFF, drones parked",
-              wait_for(lambda: coord("mode") == "off" and coord("state") == "STANDBY", 10))
+        check("a leader drone was elected: mode OFF, drones parked",
+              wait_for(lambda: coord("leader") in DRONES and coord("mode") == "off" and coord("state") == "STANDBY", 15),
+              f"(leader {coord('leader')})")
 
         print("\nTest 2: mesh OFF, rover drives into the crater")
         mission = start("mesh_protocol.mission", "--fake", "--speed", "2.5")
@@ -185,6 +185,31 @@ def main():
         time.sleep(2)
         check("corrupted packets caught by the CRC", total("bad_crc") > b0, f"({total('bad_crc') - b0})")
         check("no program crashed under corruption", all(p.poll() is None for p in procs if p is not mission))
+
+        print("\nTest 4d: kill the leader drone")
+        old = coord("leader")
+        t_kill = time.time()
+        s.put(KEY_FAIL_CONTROL, json.dumps({"kill": old}))
+        ok = wait_for(lambda: coord("leader") not in (None, old), 8)
+        took = time.time() - t_kill
+        check("a new leader took over within 3 s", ok and took <= 3.0, f"({old} -> {coord('leader')}, {took:.1f} s)")
+        check("the new leader kept the mesh ON", coord("mode") == "on")
+        check("both bases connected again within 5 s of the takeover",
+              wait_for(lambda: age("acks") < 1.5 and age("odoms") < 1.5, 5))
+
+        print("\nTest 4e: switch the mesh OFF while the leader is dead, then ON again")
+        s.put(KEY_FAIL_CONTROL, json.dumps({"revive": old}))     # back to 4 drones, then lose the leader again
+        time.sleep(3)
+        old2 = coord("leader")
+        s.put(KEY_FAIL_CONTROL, json.dumps({"kill": old2}))
+        s.put(KEY_COORD_CMD, "off")
+        check("mesh OFF reached the next leader", wait_for(lambda: coord("mode") == "off" and coord("leader") not in (None, old2), 10),
+              f"(leader {coord('leader')})")
+        s.put(KEY_COORD_CMD, "on")
+        check("and ON again", wait_for(lambda: coord("mode") == "on" and coord("state") == "DEPLOYED", 8))
+        s.put(KEY_FAIL_CONTROL, json.dumps({"revive": old2}))
+        check("revived drones accept the current leader",
+              wait_for(lambda: all(st["stats"].get(u, {}).get("leader") == coord("leader") for u in (old, old2)), 8))
 
         print("\nTest 5: second journey, mesh ON from the start")
         s.put(KEY_COORD_CMD, "off")

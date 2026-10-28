@@ -1,6 +1,6 @@
 """Small helper commands.
 
-  ros2 run mesh_protocol mesh_monitor            # live view: both bases, coordinator, links
+  ros2 run mesh_protocol mesh_monitor            # live view: both bases, leader drone, links
   ros2 run mesh_protocol mesh_ctl on|off         # the mesh toggle (same as the GUI switch)
   ros2 run mesh_protocol mesh_ctl auto|deploy    # auto = deploy only when base A loses the rover
   ros2 run mesh_protocol send_cmd 1.0 0.0        # one drive command from base A (0 = stop)
@@ -66,13 +66,14 @@ def send_cmd():
 
 def mesh_ctl():
     ap = argparse.ArgumentParser(prog="mesh_ctl")
-    ap.add_argument("what", choices=["on", "off", "auto", "deploy"])
+    ap.add_argument("what", choices=["on", "off", "auto"])
     args, _ = ap.parse_known_args()
+    if args.what == "auto":
+        print("auto mode was removed in v3: use mesh_ctl on / off")
+        return
     _put_once(KEY_COORD_CMD, args.what)
-    print({"off": "mesh OFF: drones parked, no relaying",
-           "on": "mesh ON: drones deploy now and keep both bases connected",
-           "auto": "mesh AUTO: drones deploy when the rover loses base A",
-           "deploy": "deploying drones now"}[args.what])
+    print({"off": "mesh OFF: base A tells the leader drone; drones park, no relaying",
+           "on": "mesh ON: base A tells the leader drone; drones deploy and keep both bases connected"}[args.what])
 
 
 # ------------------------------------------------------------------ mesh_monitor
@@ -121,13 +122,13 @@ def mesh_monitor():
             co = c["coord"]
             if co:
                 col = G if co["state"] == "DEPLOYED" else Y
-                out.append(f"MESH: {col}{co['mode'].upper()}{N}  state={co['state']}  "
-                           f"relay={'ON' if co['relay'] else 'OFF'}   ({co['reason']})")
+                out.append(f"MESH: {col}{co['mode'].upper()}{N}  state={co['state']}  leader={co.get('leader')} "
+                           f"(term {co.get('term')})   ({co['reason']})")
                 for b in ("base_a", "base_b"):
                     if co["chains"].get(b) is not None:
                         out.append(f"  chain {b}: rover -> {' -> '.join(co['chains'][b]) or '(direct)'} -> {b}")
             else:
-                out.append(f"MESH: {Y}no coordinator running{N}")
+                out.append(f"MESH: {Y}base A has heard no leader drone yet{N}")
             m = c["mission"]
             if m:
                 out.append(f"MISSION: {m['state']}  rover x = {m['x']} m  ({m['progress']} % to base B)"

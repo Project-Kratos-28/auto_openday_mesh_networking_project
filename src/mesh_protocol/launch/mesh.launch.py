@@ -1,4 +1,4 @@
-# Starts the whole mesh: link model, radio channel, stand-in injector, coordinator,
+# Starts the whole mesh: link model, radio channel, stand-in injector,
 # and one mesh node per unit (rover, 4 drones, base_a, base_b).
 #   ros2 launch mesh_protocol mesh.launch.py                 # Gazebo must already be running
 #   ros2 launch mesh_protocol mesh.launch.py sim:=true       # also start Gazebo (mars_sim)
@@ -36,9 +36,8 @@ def build(context):
     later = [py("radio_channel", "mesh_link_model.radio_channel")]
     if arg("injector") == "passthrough":
         later.append(py("injector", "mesh_link_model.passthrough_injector"))
-    later += [py(u, "mesh_protocol.mesh_node", "--unit", u, *(f if u == "rover" else [])) for u in UNITS]
-    if arg("coordinator") != "none":
-        later.append(py("coordinator", "mesh_protocol.coordinator", *f, "--start", arg("mesh")))
+    # the coordinator runs inside the drones (elected leader); drones move themselves, so they need --fake too
+    later += [py(u, "mesh_protocol.mesh_node", "--unit", u, *f, "--mesh", arg("mesh")) for u in UNITS]
     if arg("dashboard") == "true":
         later.append(py("dashboard", "mesh_dashboard.server"))
     actions.append(TimerAction(period=2.0, actions=later))          # let the hub start first
@@ -54,8 +53,7 @@ def generate_launch_description():
         DeclareLaunchArgument("mission", default_value="false", description="start the A -> B drive"),
         DeclareLaunchArgument("injector", default_value="passthrough",
                               description="passthrough = stand-in injector, none = use the real one"),
-        DeclareLaunchArgument("coordinator", default_value="true", description="true | none"),
-        DeclareLaunchArgument("mesh", default_value="off", description="mesh mode at start: off | on | auto"),
+        DeclareLaunchArgument("mesh", default_value="off", description="mesh mode at start: off | on"),
         DeclareLaunchArgument("dashboard", default_value="false",
                               description="also start the web dashboard on http://localhost:8080"),
         OpaqueFunction(function=build),
