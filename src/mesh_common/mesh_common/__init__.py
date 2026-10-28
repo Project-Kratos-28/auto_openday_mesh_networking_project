@@ -163,7 +163,14 @@ def decode(data):
             return None, "bad_crc"
     except Exception:
         return None, "bad_format"
-    if any(k not in pkt for k in REQUIRED) or pkt["type"] not in TYPES \
+    if any(k not in pkt for k in REQUIRED):
+        return None, "bad_format"
+    path, seq = pkt["path"], pkt["seq"]
+    if not all(isinstance(pkt[k], str) for k in ("src", "dst", "next_hop")) \
+            or not isinstance(seq, int) or isinstance(seq, bool) or pkt["priority"] not in (0, 1, 2) \
+            or not isinstance(path, list) or not path or not all(isinstance(u, str) for u in path):
+        return None, "bad_format"
+    if pkt["type"] not in TYPES \
             or not isinstance(pkt["path"], list) or not isinstance(pkt["ttl"], int) \
             or not isinstance(pkt["payload"], dict) or not isinstance(pkt["priority"], int) \
             or not isinstance(pkt["lifetime"], (int, float)) or not isinstance(pkt["sent_time"], (int, float)):

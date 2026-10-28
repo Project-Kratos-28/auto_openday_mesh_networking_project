@@ -21,6 +21,7 @@ DTN rules (docs/V3_CHANGES.md):
 import argparse
 import json
 import math
+import traceback
 import threading
 import time
 from collections import OrderedDict
@@ -31,6 +32,7 @@ from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED,
                          make_packet, encode, decode, expired, bundle_id, open_session)
 from mesh_link_model.sim_io import teleport
 from mesh_protocol.leader import Election
+from mesh_protocol.mover import Mover
 from mesh_protocol.photo import Reassembler, chunks, photo_bytes
 from mesh_protocol.store import BundleStore
 
@@ -39,6 +41,17 @@ HELLO_PERIOD = 0.5
 SEEN_MEMORY = 5000             # bundle ids remembered by the duplicate filter
 WATCHDOG = 2.0                 # rover stops if no drive command for this long
 PING_PERIOD = 1.0              # base_a pings the rover this often when idle
+def _xyz(v):
+    """[x, y, z] numbers, or None."""
+    ok = isinstance(v, (list, tuple)) and len(v) == 3 and all(
+        isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) for c in v)
+    return list(v) if ok else None
+
+
+def _names(v):
+    return isinstance(v, list) and all(isinstance(u, str) for u in v)
+
+
 STATUS_PERIOD = 0.5            # every unit reports position + neighbours this often
 STATUS_FRESH = 2.0             # s: a drone with an older STATUS is left out of the plan (dead)
 LEADER_PERIOD = 0.5            # leader heartbeat
@@ -71,11 +84,12 @@ class MeshNode:
         self.last_leader = None                         # newest LEADER payload we follow (+ "time")
         self.election = Election(unit, time.time())     # drones elect; everyone uses it to pick a leader
         self.want_mode = None                           # base_a: mesh mode asked for, until a LEADER shows it
-        self.teleported_to = None                       # drones: last target we moved to
+        self.move_asked = (None, 0.0)                   # drones: (target, time) last handed to the mover
         if self.is_drone:
             from mesh_link_model.terrain import Terrain
             from mesh_protocol.leader import Coordinator
             self.coord = Coordinator(Terrain.load(), mesh)
+            self.mover = Mover(lambda x, y, z: teleport(unit, x, y, z, fake=fake, session=self.session))
         self.session = session or open_session()
         s = self.session
         self.pub_tx = s.declare_publisher(key_tx(unit))
@@ -219,7 +233,10 @@ class MeshNode:
             with self.lock:
                 self.stats["bad_crc"] += 1
             return
-        self._send(self.handle(pkt, time.time()))
+        try:
+            self._send(self.handle(pkt, time.time()))
+        except Exception:                               # a bundle we can't handle must not hurt the node
+            self.log("error handling a bundle (dropped):\n" + traceback.format_exc())
 
     def handle(self, pkt, now):
         """Apply the receive rules to one good bundle. Returns the bundles to send right away."""
@@ -337,15 +354,25 @@ class MeshNode:
     def on_control(self, pkt, now):
         t, p, src = pkt["type"], pkt["payload"], pkt["src"]
         if t == "STATUS":
+            pos, nb = p.get("pos"), p.get("neighbours", [])
+            if (pos is not None and _xyz(pos) is None) or not _names(nb):
+                return                                  # malformed: ignore
             with self.lock:
-                self.statuses[src] = dict(p, time=now)
-            self.election.on_status(src, now)
+                self.statuses[src] = {"pos": pos, "neighbours": nb, "time": now}
+                self.election.on_status(src, now)
         elif t == "LEADER":
-            was = self.election.is_leader
-            self.election.on_leader(p, now)
+            routes, targets = p.get("routes", {}), p.get("targets", {})
+            if not (isinstance(routes, dict) and all(isinstance(r, dict) and all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in r.items()) for r in routes.values())
+                    and isinstance(targets, dict) and all(_xyz(v) for v in targets.values())):
+                return                                  # malformed: ignore
+            with self.lock:
+                was = self.election.is_leader
+                self.election.on_leader(p, now)
+                follow = self.election.leader == p.get("leader") and self.election.term == p.get("term")
             if was and not self.election.is_leader:
                 self.log(f"stepping down: {p.get('leader')} leads (term {p.get('term')})")
-            if self.election.leader == p.get("leader") and self.election.term == p.get("term"):
+            if follow:
                 self._apply_leader(p, pkt["sent_time"])
         elif t == "MESH_CMD" and self.is_drone and self.election.is_leader:
             if p.get("mode") in ("on", "off") and p["mode"] != self.coord.mode:
@@ -364,9 +391,12 @@ class MeshNode:
             self.event("route_change", routes=routes)
         if self.is_drone and not self.killed:
             target = (p.get("targets") or {}).get(self.unit)
-            if target and self.pos and math.dist(target, self.pos) > 0.5 and target != self.teleported_to:
-                self.teleported_to = target
-                teleport(self.unit, *target, fake=self.fake, session=self.session)
+            asked, at = self.move_asked
+            now = time.time()
+            # move (in the background) when the target is new, or we still aren't there 3 s after asking
+            if target and self.pos and math.dist(target, self.pos) > 0.5 and (target != asked or now - at > 3.0):
+                self.move_asked = (target, now)
+                self.mover.request(target)
         if self.unit == COMMANDER:
             self.pub_coord.put(json.dumps(dict(p, time=sent, relay=p.get("state") == "DEPLOYED")))
             if self.want_mode == p.get("mode"):
@@ -375,7 +405,9 @@ class MeshNode:
     def _lead(self, now):
         """Drones, every loop: run the election; the leader plans and floods its heartbeat every
         LEADER_PERIOD (and at once when it has just been elected)."""
-        if self.election.tick(now):
+        with self.lock:
+            elected = self.election.tick(now)
+        if elected:
             self.log(f"I am the LEADER now (term {self.election.term})")
             self.event("election", term=self.election.term)
             if self.last_leader:
@@ -440,48 +472,52 @@ class MeshNode:
         known, battery = set(), 100.0
         try:
             while True:
-                now = time.time()
-                if now >= next_hello:
-                    self.originate(BROADCAST, "HELLO", {}, ttl=1)
-                    next_hello = now + HELLO_PERIOD
-                if self.unit == "rover":
-                    if self.moving and now - self.last_drive > WATCHDOG:
-                        self.drive(0.0, 0.0)
-                        self.moving = False
-                        self.log("no command for 2 s -> stopping (safety watchdog)")
-                    if now >= next_telem:
-                        battery = max(0.0, battery - 0.005)
-                        self.originate(RECEIVER, "TELEMETRY",
-                                       {"odom": self.odom, "truth": self.truth,
-                                        "moving": self.moving, "battery": round(battery, 2)})
-                        next_telem = now + self.telemetry_period
-                if now >= next_status and not self.killed:
-                    st = {"pos": self.pos, "neighbours": sorted(self._alive(now))}
-                    with self.lock:
-                        self.statuses[self.unit] = dict(st, time=now)
-                    self.originate(BROADCAST, "STATUS", st)
-                    next_status = now + STATUS_PERIOD
-                if self.is_drone and not self.killed:
-                    self._lead(now)
-                if self.unit == COMMANDER and self.want_mode and now >= self.next_mesh_cmd:
-                    self.originate(BROADCAST, "MESH_CMD", {"mode": self.want_mode})
-                    self.next_mesh_cmd = now + 1.0
-                if self.unit == COMMANDER and now - self.last_cmd_sent > PING_PERIOD:
-                    self.originate("rover", "COMMAND", {"ping": True})
-                    self.last_cmd_sent = now
-                self._send(self.tick(now))
-                if now >= next_stats:
-                    with self.lock:
-                        nb = sorted(self._alive(now))
-                        stats = dict(self.stats, held=self.store.held(), neighbours=nb, routes=self.routes,
-                                     killed=self.killed, leader=self.election.leader,
-                                     term=self.election.term, time=now)
-                    self.pub_stats.put(json.dumps(stats))
-                    if set(nb) != known:
-                        self.log(f"neighbours: {nb if nb else 'NONE'}")
-                        known = set(nb)
-                    next_stats = now + 1.0
-                time.sleep(0.02)
+                try:
+                    now = time.time()
+                    if now >= next_hello:
+                        self.originate(BROADCAST, "HELLO", {}, ttl=1)
+                        next_hello = now + HELLO_PERIOD
+                    if self.unit == "rover":
+                        if self.moving and now - self.last_drive > WATCHDOG:
+                            self.drive(0.0, 0.0)
+                            self.moving = False
+                            self.log("no command for 2 s -> stopping (safety watchdog)")
+                        if now >= next_telem:
+                            battery = max(0.0, battery - 0.005)
+                            self.originate(RECEIVER, "TELEMETRY",
+                                           {"odom": self.odom, "truth": self.truth,
+                                            "moving": self.moving, "battery": round(battery, 2)})
+                            next_telem = now + self.telemetry_period
+                    if now >= next_status and not self.killed:
+                        with self.lock:
+                            st = {"pos": self.pos, "neighbours": sorted(self._alive(now))}
+                            self.statuses[self.unit] = dict(st, time=now)
+                        self.originate(BROADCAST, "STATUS", st)
+                        next_status = now + STATUS_PERIOD
+                    if self.is_drone and not self.killed:
+                        self._lead(now)
+                    if self.unit == COMMANDER and self.want_mode and now >= self.next_mesh_cmd:
+                        self.originate(BROADCAST, "MESH_CMD", {"mode": self.want_mode})
+                        self.next_mesh_cmd = now + 1.0
+                    if self.unit == COMMANDER and now - self.last_cmd_sent > PING_PERIOD:
+                        self.originate("rover", "COMMAND", {"ping": True})
+                        self.last_cmd_sent = now
+                    self._send(self.tick(now))
+                    if now >= next_stats:
+                        with self.lock:
+                            nb = sorted(self._alive(now))
+                            stats = dict(self.stats, held=self.store.held(), neighbours=nb, routes=self.routes,
+                                         killed=self.killed, leader=self.election.leader,
+                                         term=self.election.term, time=now)
+                        self.pub_stats.put(json.dumps(stats))
+                        if set(nb) != known:
+                            self.log(f"neighbours: {nb if nb else 'NONE'}")
+                            known = set(nb)
+                        next_stats = now + 1.0
+                    time.sleep(0.02)
+                except Exception:                      # one bad pass must never end the node
+                    self.log("error in main loop (carrying on):\n" + traceback.format_exc())
+                    time.sleep(0.2)
         except KeyboardInterrupt:
             pass
         finally:

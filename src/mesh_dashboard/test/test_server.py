@@ -125,3 +125,24 @@ def test_no_external_urls():
         text = open(os.path.join(STATIC, name), encoding="utf-8").read()
         text = text.replace("http://www.w3.org/2000/svg", "")     # SVG namespace name, never fetched
         assert "http://" not in text and "https://" not in text, name
+
+
+def test_text_plain_post_refused(server):
+    """A random web page can POST text/plain cross-site without a CORS preflight: refuse it."""
+    url, b = server
+    req = urllib.request.Request(url + "/api/failure", data=b'{"kill": "drone_1"}',
+                                 headers={"Content-Type": "text/plain"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req, timeout=3)
+    assert e.value.code == 415 and b.calls == []
+
+
+def test_huge_body_refused(server):
+    url, b = server
+    assert post(url + "/api/mesh", b"[" * 200000) in (400, 413)
+    assert b.calls == []
+
+
+def test_deep_json_400(server):
+    url, _ = server
+    assert post(url + "/api/mesh", b"[" * 5000 + b"]" * 5000) == 400

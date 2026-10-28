@@ -63,3 +63,14 @@ def test_rover_sends_photo_on_request_and_base_b_rebuilds_it():
         base_b.handle(decode(encode(q))[0], time.time())
     final = s.published("mesh/base_b/photo")[-1]
     assert final["done"] and final["ok"] and base64.b64decode(final["image_b64"]) == photo_bytes()
+
+
+def test_late_chunk_of_older_photo_does_not_wipe_newer():
+    """Visitor double-clicks: photo #2 starts while a resend of a photo #1 chunk is still on its way."""
+    r = Reassembler()
+    new = chunks(DATA, 2)
+    r.add(new[0])
+    r.add(chunks(DATA, 1)[3])                             # late chunk of the older photo
+    for p in new[1:]:
+        out = r.add(p)
+    assert out["done"] and out["ok"] and out["photo_id"] == 2

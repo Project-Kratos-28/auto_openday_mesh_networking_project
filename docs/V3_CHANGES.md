@@ -72,7 +72,7 @@ stop after any step: each one leaves a working demo.
 ## How to check your work
 
 ```bash
-python3 -m pytest src/*/test             # unit tests, seconds
+python3 -m pytest src/*/test             # 76 unit tests, seconds
 ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~6 min; must end with 36/36 checks passed
 ```
 
@@ -88,6 +88,14 @@ ros2 run mesh_protocol selftest          # fake mode, no Gazebo, ~6 min; must en
 - No per-bundle "custody" events in `mesh/events` (counters only): 8+ a second would flood the log.
 
 ## Known limits
+
+Small issues found in the final review and left for later (none breaks the demo):
+- A killed node stops expiring its store, so on revive it reports a burst of expired pings.
+- `MESH_CMD` has no ordering: two quick `mesh_ctl on`/`off` reordered in flight could leave the other mode.
+- Sequence numbers restart at 1 when a single node is restarted: other nodes take its new bundles for
+  duplicates for a while. Restart the whole launch instead of one node.
+- A photo chunk dropped at a full relay store is not resent end to end (photo stuck at N-1/N).
+- The dashboard re-sends the photo in every snapshot (~140 KB, 4 times a second, localhost only).
 
 - Not run on 24.04 / Jazzy / Gazebo yet (see step 6). In Gazebo the drones teleport themselves with the
   `set_pose` service from inside their own node: check that works with several nodes at once.

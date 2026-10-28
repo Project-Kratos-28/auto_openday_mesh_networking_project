@@ -191,3 +191,19 @@ def test_control_flood_passed_on_once():
     p = leader_flood()
     assert len(n.handle(p, time.time())) == 1
     assert n.handle(p, time.time()) == []
+
+
+def test_leader_with_bad_routes_is_ignored():
+    n, _ = node("base_a")
+    p = make_packet("drone_1", "*", 1, "LEADER", {"leader": "drone_1", "term": 1, "routes": {"base_a": ["x"]}})
+    n.handle(decode(encode(p))[0], time.time())
+    assert n.routes == {}
+    n.routes = {"rover": "drone_1"}
+    n.tick(time.time())                                   # must not raise
+
+
+def test_status_with_bad_pos_is_ignored():
+    n, _ = node("drone_2")
+    p = make_packet("drone_1", "*", 1, "STATUS", {"pos": "here", "neighbours": 3})
+    n.handle(decode(encode(p))[0], time.time())
+    assert "drone_1" not in n.statuses

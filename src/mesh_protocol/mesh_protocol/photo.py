@@ -36,8 +36,12 @@ class Reassembler:
 
     def add(self, p):
         """Add one chunk payload. Returns progress; when done, also ok (sha256 match) and the image."""
-        if p.get("photo_id") != self.photo_id:
-            self.photo_id, self.parts, self.result = p.get("photo_id"), {}, None
+        pid = p.get("photo_id")
+        if self.photo_id is not None and pid < self.photo_id:
+            return self.result or {"photo_id": self.photo_id, "received": len(self.parts),
+                                   "total": p["total"], "done": False}   # late chunk of an older photo
+        if pid != self.photo_id:
+            self.photo_id, self.parts, self.result = pid, {}, None
         if self.result is not None:
             return self.result
         self.parts[p["index"]] = p["data"]

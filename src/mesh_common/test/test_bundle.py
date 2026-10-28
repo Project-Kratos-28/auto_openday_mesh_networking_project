@@ -24,3 +24,20 @@ def test_expired():
 
 def test_command_lifetime_below_watchdog():
     assert LIFETIME["COMMAND"] < 2.0
+
+
+def _bad(**kw):
+    p = make_packet("rover", "base_b", 3, "TELEMETRY", {})
+    p.update(kw)
+    return decode(encode(p))
+
+
+def test_decode_rejects_wrong_field_types():
+    assert _bad(dst=["base_b"]) == (None, "bad_format")
+    assert _bad(src=5) == (None, "bad_format")
+    assert _bad(next_hop=None) == (None, "bad_format")
+    assert _bad(seq="1") == (None, "bad_format")
+    assert _bad(priority=7) == (None, "bad_format")
+    assert _bad(path=[]) == (None, "bad_format")
+    assert _bad(path=["rover", 3]) == (None, "bad_format")
+    assert _bad(seq=True) == (None, "bad_format")

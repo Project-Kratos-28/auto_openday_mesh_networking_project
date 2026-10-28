@@ -20,6 +20,7 @@ from mesh_common import UNITS
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 PERIOD = 0.25          # s between snapshots
+MAX_BODY = 64 * 1024   # bytes
 
 
 def check_failure(cfg):
@@ -80,10 +81,18 @@ def make_server(bridge, host="127.0.0.1", port=8080):
                 pass                                # browser went away
 
         def do_POST(self):
+            # JSON only: a cross-site page can send text/plain without a CORS preflight, never application/json
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+                return self._reply(415, b'{"error": "send application/json"}')
             try:
                 n = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(n) or b"{}")
             except ValueError:
+                n = -1
+            if not 0 <= n <= MAX_BODY:
+                return self._reply(413, b'{"error": "body too large"}')
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except (ValueError, RecursionError):
                 return self._reply(400, b'{"error": "bad json"}')
             if self.path == "/api/mesh" and isinstance(body, dict) and isinstance(body.get("on"), bool):
                 bridge.set_mesh(body["on"])
