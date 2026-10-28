@@ -116,7 +116,6 @@ SEND_RATE = 40          # bundles a node may send per second (makes priority mat
 STORE_LIMIT = 500       # bundles a node can hold
 RTO_START = 0.3         # s before the first resend; doubles each try
 RTO_MAX = 2.0           # s, longest wait between resends
-MAX_TRIES = 5           # tries to one next hop before looking the route up again
 LEASE = 2.0             # s a leader's heartbeat stays valid
 LATE_AFTER = 1.0        # s: odometry older than this on arrival is marked late
 
