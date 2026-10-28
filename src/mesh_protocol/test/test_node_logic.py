@@ -110,6 +110,7 @@ def test_tick_sends_held_bundle_to_route():
     n, _ = node("drone_1")
     n.handle(telemetry(), time.time())
     n.routes = {"base_b": "drone_2"}
+    n.neighbours["drone_2"] = time.time() + 1
     out = n.tick(time.time() + 1)
     assert [(o["type"], o["next_hop"]) for o in out] == [("TELEMETRY", "drone_2")]
 
@@ -145,6 +146,7 @@ def test_route_table_beats_stale_neighbour():
     n, _ = node("base_a")
     now = time.time()
     n.neighbours["rover"] = now - 1.0          # heard a second ago, but the link may be gone
+    n.neighbours["drone_2"] = now - 0.2
     n.routes = {"rover": "drone_2"}
     assert n.next_hop("rover", now) == "drone_2"
 
@@ -154,3 +156,19 @@ def test_neighbour_used_when_no_route():
     now = time.time()
     n.neighbours["rover"] = now - 0.2
     assert n.next_hop("rover", now) == "rover"
+
+
+def test_route_through_silent_hop_is_held():
+    n, _ = node("base_a")
+    now = time.time()
+    n.neighbours["drone_3"] = now - 5.0        # dead: no HELLO for 5 s
+    n.routes = {"rover": "drone_3"}
+    assert n.next_hop("rover", now) is None
+
+
+def test_route_through_live_hop_used():
+    n, _ = node("base_a")
+    now = time.time()
+    n.neighbours["drone_3"] = now - 0.2
+    n.routes = {"rover": "drone_3"}
+    assert n.next_hop("rover", now) == "drone_3"

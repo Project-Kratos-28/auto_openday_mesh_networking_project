@@ -130,14 +130,16 @@ class MeshNode:
         return {u for u, t in self.neighbours.items() if now - t < NEIGHBOUR_TIMEOUT}
 
     def next_hop(self, dst, now=None):
-        """The coordinator's route; without one, the destination itself if we can hear it; else None (hold).
+        """The coordinator's route if we can hear that hop; else the destination itself if we can hear it;
+        else None (hold).
 
         The route table wins: it is rebuilt twice a second, while a neighbour stays "alive" for up to
         NEIGHBOUR_TIMEOUT after its last HELLO, even if the link just broke.
         """
+        alive = self._alive(now or time.time())
         nh = self.routes.get(dst)
-        if nh is None and dst in self._alive(now or time.time()):
-            return dst
+        if nh not in alive:                    # never hand custody to a hop we can't hear
+            nh = dst if dst in alive else None
         return nh
 
     def _take(self, pkt, now):
