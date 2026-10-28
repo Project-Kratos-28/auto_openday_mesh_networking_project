@@ -8,3 +8,5 @@ __pycache__/
 CLAUDE.md
 docs/CLAUDE_CODE_MANUAL.md
 *.egg-info/
+.superpowers/
+.venv/
