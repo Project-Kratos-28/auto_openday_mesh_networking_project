@@ -3,6 +3,8 @@
 
 A ROS 2 + Gazebo simulation of a rover that loses contact with its base station inside a crater. A team of 4 relay drones forms a **mesh network** (our own protocol, on **[Zenoh](https://zenoh.io)**) that keeps the rover connected to **two base stations**: base A drives the rover, and base B receives its odometry.
 
+**v3 (this branch):** the mesh works like NASA's **Delay/Disruption Tolerant Networking (DTN)**: hop-by-hop custody transfer, store and forward, per-packet lifetimes, priorities, assigned routes, a coordinator that runs on an **elected leader drone**, a rover photo sent in chunks, and a mission-control **web dashboard**. What changed from v2 and where the work stands: [`docs/V3_CHANGES.md`](docs/V3_CHANGES.md).
+
 ![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-blue) ![Gazebo Harmonic](https://img.shields.io/badge/Gazebo-Harmonic-orange) ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420) ![Python](https://img.shields.io/badge/Python-3.12-3776AB)
 
 ![The relay world drawn to true scale: side view with the rover in the crater and the 4 drones relaying, and the top view](docs/images/relay_world_preview.png)
@@ -25,8 +27,8 @@ A ROS 2 + Gazebo simulation of a rover that loses contact with its base station 
 1. The **rover** starts next to **base A** and drives through a crater to **base B**.
 2. Base A sends the rover **velocity commands**, and the rover answers each one with an **ACK**. The rover sends its **odometry** to base B.
 3. Radio links only work with **line of sight over the terrain** and within **32 m**. Inside the crater the rim blocks both bases, so the rover stops (safety watchdog).
-4. Switch the **mesh network ON** (GUI toggle). The 4 drones fly to relay positions, forming one chain to each base. Both links come back, the rover drives on, and base B gets odometry **all the way to the end**.
-5. A failure injector can corrupt or drop packets. CRC checks catch every broken packet, and nothing crashes.
+4. Switch the **mesh network ON** (dashboard toggle). The leader drone moves the 4 drones to relay positions, forming one chain to each base. Both links come back, the rover drives on, and base B gets odometry **all the way to the end**: samples held during the outage arrive late instead of being lost.
+5. A failure injector can corrupt or drop packets, or kill a drone. CRC checks catch every broken packet, custody transfer resends lost ones, a new leader takes over in about 2 s, and nothing crashes.
 
 ## 2. What works now
 
@@ -37,12 +39,12 @@ A ROS 2 + Gazebo simulation of a rover that loses contact with its base station 
 | Link model | Line of sight over the real terrain + radio range → which links are up | `mesh_link_model` | ✅ |
 | Radio channel | Delivers a packet only to units with a working link | `mesh_link_model` | ✅ |
 | Failure injection | **Stand-in only** (`passthrough_injector`: corrupt / drop for tests). Full module still to come | `mesh_link_model` → `failure_injection` | 🟡 |
-| Mesh protocol v2 | One node per unit: HELLO neighbours, flooding with duplicate filter + TTL, CRC check, COMMAND / ACK / TELEMETRY | `mesh_protocol` | ✅ |
-| Coordinator | Mesh ON/OFF switch; plans and moves the 4 relay drones, follows the rover | `mesh_protocol` | ✅ |
+| Mesh protocol v3 (DTN) | One node per unit: custody transfer, store and forward, lifetimes, priorities, routed bundles, CRC check, COMMAND / ACK / TELEMETRY / photo | `mesh_protocol` | ✅ |
+| Coordinator (leader drone) | Lease election among the drones; the leader plans drone positions and the route table, follows the rover | `mesh_protocol` | ✅ |
 | Mission autopilot | Base A drives the rover from base A to base B over the mesh | `mesh_protocol` | ✅ |
 | Monitor | Live text view of both bases, links and counters | `mesh_protocol` | ✅ |
-| Base station GUI | **Placeholder** (PyQt6): working mesh toggle + status, TODO boxes for the rest | `base_station_gui` | 🟡 |
-| Self-test | Whole demo without Gazebo, 19 checks (~2 min) | `mesh_protocol` | ✅ |
+| Mission-control dashboard | Web page: crater map with live routes, held bundles, delivery rates, late odometry, event log, photo, failure controls | `mesh_dashboard` | ✅ |
+| Self-test | Whole demo without Gazebo, 36 checks (~6 min) | `mesh_protocol` | ✅ |
 
 Gazebo is reached with the **Gazebo Python bindings** (`gz.transport13`): positions come from `/world/mars_world/pose/info`, the rover is driven on `/rover/cmd_vel`, and drones move with the `set_pose` service. No ROS 2 bridge is needed for the demo.
 
@@ -117,7 +119,7 @@ cd ~/mars_ws
 colcon build --symlink-install
 source install/setup.bash
 echo "source ~/mars_ws/install/setup.bash" >> ~/.bashrc    # optional: every new terminal knows our packages
-ros2 run mesh_protocol selftest                            # ~2 min, should end with 19/19 checks passed
+ros2 run mesh_protocol selftest                            # ~6 min, should end with 36/36 checks passed
 ```
 
 ## 4. Run the demo
@@ -127,8 +129,8 @@ Open 4 terminals. In **each** one run `cd ~/mars_ws && source install/setup.bash
 | Terminal | Command | What it is |
 |---|---|---|
 | T1 | `ros2 launch mars_sim sim.launch.py` | Gazebo with the crater world (press ▶ if paused) |
-| T2 | `ros2 launch mesh_protocol mesh.launch.py` | link model, radio, injector, 7 mesh nodes, coordinator. **Mesh starts OFF** |
-| T3 | `ros2 run base_station_gui gui` | base station window with the **mesh ON/OFF toggle** |
+| T2 | `ros2 launch mesh_protocol mesh.launch.py` | link model, radio, injector, 7 mesh nodes (the drones elect a leader). **Mesh starts OFF** |
+| T3 | `ros2 run mesh_dashboard dashboard` | mission-control dashboard: open **http://localhost:8080** (mesh toggle, photo, failure controls) |
 | T4 | `ros2 run mesh_protocol mission` | base A drives the rover to base B (1 m/s, about 70 s) |
 
 Optional T5: `ros2 run mesh_protocol mesh_monitor` (text view of everything).
@@ -137,16 +139,17 @@ Optional T5: `ros2 run mesh_protocol mesh_monitor` (text view of everything).
 
 1. **Mesh OFF.** Base A is CONNECTED (`base_a → rover`) and base B shows NO DATA.
 2. **Link lost.** About 6 m past the rim the terrain blocks base A. Base A shows NO CONNECTION, and the rover stops after 2 s (safety watchdog).
-3. **Flip the toggle ON.** All 4 drones jump to relay spots about 9 m up. Base A is connected again (`base_a → drone_2 → drone_1 → rover`) and base B starts RECEIVING odometry (`rover → drone_3 → drone_4 → base_b`). The rover drives on.
+3. **Flip the toggle ON.** Base A sends MESH_CMD to the leader drone, which moves the drones to relay spots one at a time. Base A is connected again and base B starts RECEIVING odometry, first the samples held in the rover during the outage (amber in the dashboard), then live ones. The rover drives on.
+5. **Try the failure controls.** Kill the leader drone: another takes over in about 2 s. Drop 10–20 % of packets: resends go up, nothing is lost. Take a photo: it arrives in chunks and is checked with sha256.
 4. **Follow.** The drones are moved ahead of the rover, one at a time, so neither chain ever breaks. Near base B all 4 drones form one chain back to base A.
 
 To get odometry for the **whole** trip, switch ON before starting T4 (or launch with `mesh:=on`). In Gazebo, scroll out until both base stations are visible, or right-click `primary_rover` in the Entity Tree → **Follow**.
 
-![Base station GUI placeholder with the mesh ON](docs/images/gui_placeholder.png)
+![Mission-control dashboard: mesh ON, a 3-hop command route, odometry held during the outage arriving late (amber), the rover photo received with a matching sha256, 10 % packet loss](docs/images/dashboard.png)
 
-**Without Gazebo** (fake rover, good for working on the protocol or GUI):
+**Without Gazebo** (fake rover, good for working on the protocol or dashboard):
 ```bash
-ros2 launch mesh_protocol mesh.launch.py fake:=true mission:=true gui:=true
+ros2 launch mesh_protocol mesh.launch.py fake:=true mission:=true dashboard:=true
 ```
 
 ## 5. The world (simulation reference)
@@ -172,7 +175,7 @@ Gazebo topics and services used:
 | `/rover/cmd_vel` | `gz.msgs.Twist` | drive the rover (sent by the rover's mesh node) |
 | `/rover/odom` | `gz.msgs.Odometry` | rover wheel odometry (sent to base B) |
 | `/world/mars_world/pose/info` | `gz.msgs.Pose_V` | true positions of all units (link model) |
-| `/world/mars_world/set_pose` | service `gz.msgs.Pose` | teleport drones (coordinator) |
+| `/world/mars_world/set_pose` | service `gz.msgs.Pose` | teleport drones (each drone moves itself) |
 
 ## 6. How the network works
 
@@ -193,37 +196,43 @@ A packet never goes straight from one unit to another:
 | `base_a` | **Commander.** Turns `mesh/base_a/cmd` into COMMAND packets, pings the rover every 1 s when idle, and publishes every ACK on `mesh/base_a/acks` |
 | `rover` | Applies COMMANDs, answers each with an ACK, sends odometry (TELEMETRY) to base B every 0.5 s. **Watchdog:** stops if no drive command for 2 s |
 | `base_b` | **Receiver.** Publishes the rover's odometry on `mesh/base_b/telemetry` |
-| `drone_1` … `drone_4` | **Relays only**, and only while the coordinator says the mesh is ON |
+| `drone_1` … `drone_4` | **Relays** (when the leader's route table names them). One of them is the **leader**: it plans where the drones go and computes the route table |
 
-### Protocol rules (`mesh_protocol/mesh_node.py`)
-- **HELLO** every 1 s (TTL 1, never forwarded). A neighbour is gone after 3 s without one.
-- **Flooding:** a drone re-sends every new packet that isn't for it. Bases and the rover never forward.
-- **Duplicate filter:** `(src, type, seq)` is remembered, so each packet is forwarded once. Each packet type has its own `seq` counter.
-- **TTL** starts at 8 and drops by 1 per hop; at 0 the packet is dropped. `path` lists every unit it passed.
-- **CRC32 + parse check:** broken packets are counted (`bad_crc`) and dropped. They never crash a node.
+### Protocol rules, v3 DTN (`mesh_protocol/mesh_node.py`, `store.py`, `routing.py`, `leader.py`)
+- **HELLO** every 0.5 s (TTL 1, never forwarded). A neighbour is gone after 1.5 s without one.
+- **Routed bundles** (`COMMAND`, `ACK`, `TELEMETRY`, `PHOTO_REQ`, `PHOTO_CHUNK`) go hop by hop. The next hop comes from the leader's route table (or the destination itself if there is no route and it is in range). A node never hands a bundle to a next hop it can't hear.
+- **Custody transfer:** the sender keeps the bundle in its **store** until the next hop answers with `CUSTODY_ACK`, and resends after 0.3 s, doubling up to 2 s. The receiver always acks (even duplicates) and then holds the bundle itself.
+- **Store and forward:** no usable next hop = the bundle waits in the store (max 500; when full the oldest bulk bundle goes first).
+- **Lifetime:** every bundle expires (`COMMAND` 1 s, below the rover's 2 s watchdog, so it never acts on old orders; `TELEMETRY` 120 s, so odometry arrives late instead of being lost; photo chunks 300 s).
+- **Priority:** expedited (commands, control) → normal (odometry) → bulk (photo); each node sends at most 40 bundles/s.
+- **Control floods** (`STATUS`, `LEADER`, `MESH_CMD`): duplicate filter + TTL, passed on by every unit, no custody (they repeat every 0.5–1 s).
+- **Duplicate filter** on `(src, type, seq)`; **TTL** 8 as a hop limit; **CRC32 + parse check:** broken packets are counted (`bad_crc`) and dropped. They never crash a node.
 
 ### Packet format (JSON, defined in `mesh_common`)
 ```json
-{"src": "rover", "dst": "base_b", "next_hop": "*", "seq": 42, "ttl": 8,
+{"src": "rover", "dst": "base_b", "next_hop": "drone_4", "seq": 42, "ttl": 7,
  "path": ["rover", "drone_3"], "type": "TELEMETRY", "sent_time": 1729071234.5,
+ "lifetime": 120, "priority": 1,
  "payload": {"odom": {"x": 1.2, "y": 0.0, "yaw": 0.01, "v": 1.0}, "truth": {"pos": [1.2, 0.0, 0.1]},
              "moving": true, "battery": 99.5},
  "crc32": 3735928559}
 ```
-`type` is `HELLO`, `COMMAND` (base A → rover, e.g. `{"linear": 1.0, "angular": 0.0}` or `{"ping": true}`), `ACK` (rover → base A) or `TELEMETRY` (rover → base B).
+`type` is `HELLO`, `CUSTODY_ACK` (one hop), `COMMAND` (base A → rover, e.g. `{"linear": 1.0, "angular": 0.0}` or `{"ping": true}`), `ACK` (rover → base A), `TELEMETRY` (rover → base B), `PHOTO_REQ` / `PHOTO_CHUNK`, or the control floods `STATUS` (position + neighbours), `LEADER` (heartbeat: term, mode, route table, drone targets) and `MESH_CMD` (on/off).
 
-### Coordinator: the mesh switch (`mesh_protocol/coordinator.py`)
+### Coordinator on the leader drone (`mesh_protocol/leader.py`)
+**Election:** the leader floods a `LEADER` heartbeat every 0.5 s (lease 2 s). A drone that hears none for 2 s + a random 0–0.5 s, and is the lowest-id drone it has heard from in the last 2 s, becomes leader with `term + 1`. A leader steps down on a higher term, or the same term from a lower id. A new leader inherits the mode and drone targets from the last heartbeat. Base A republishes the newest heartbeat on `mesh/coordinator/state`.
+
 | Mode | Behaviour |
 |---|---|
-| `off` (default) | Drones parked behind base A, relaying off. Direct links only |
+| `off` (default) | Drones parked behind base A, not used as relays. Direct links only |
 | `on` | Drones deploy **at once**, wherever the rover is, and follow it |
-| `auto` | Stay parked until base A hears nothing from the rover for 3 s, then deploy |
 
-While deployed, the coordinator works like this:
+The dashboard / `mesh_ctl` asks base A, which sends `MESH_CMD` to the leader every second until a heartbeat shows the new mode. While deployed, the leader works like this (using positions **reported** in `STATUS`, never true positions):
 - **Checks:** every 0.5 s it tests both chains, for where the rover is now and where it'll be in 3 s.
 - **Re-plans:** when a chain would break, or after the rover moves 8 m.
 - **Planner** (`mesh_link_model/planner.py`): for each base, it tries 0, 1, 2… drones spaced along the line rover → base, at 3 / 6 / 10 / 15 m above the ground. It uses the fewest that give every hop line of sight and range, and spare drones go to the chain with the longest hop, so all 4 always help.
-- **Moving drones:** one at a time, in an order that keeps both chains working at every step.
+- **Moving drones:** one target at a time, in an order that keeps both chains working at every step; each drone teleports itself to its target. Drones with no `STATUS` for 2 s count as dead and are left out.
+- **Route table:** shortest hop count (ties: better links) over the links the leader works out from positions + range + line of sight on the terrain map, so routes change the moment a move is ordered.
 
 ### Zenoh keys
 | Key | From → To | Contents |
@@ -231,15 +240,17 @@ While deployed, the coordinator works like this:
 | `mesh/<unit>/tx` · `/air` · `/rx` | see packet path | raw packets |
 | `mesh/links` | link model → all | `{"links": [{"a","b","up","distance","in_range","los","quality"}]}` |
 | `mesh/positions` | link model → all | true `x, y, z` and `yaw` of every unit |
-| `mesh/stats/<unit>` | each node → GUI | sent / received / forwarded / delivered / duplicates / bad_crc, neighbours, relay on/off |
-| `mesh/base_a/cmd` | mission, GUI → base A | velocity command `{"linear", "angular"}` |
-| `mesh/base_a/acks` | base A → GUI | every ACK: round trip, command route, ACK route |
-| `mesh/base_b/telemetry` | base B → GUI | odometry + route + delay |
-| `mesh/coordinator/cmd` | GUI toggle, `mesh_ctl` → coordinator | `on` / `off` / `auto` / `deploy` |
-| `mesh/coordinator/state` | coordinator → drones, GUI | mode, state, relay, chains, drone targets |
-| `mesh/mission/status` | mission → GUI | rover x, progress %, assists |
-| `mesh/failure/control` | GUI, terminal → injector | e.g. `{"corrupt_probability": 0.2, "drop_probability": 0.05}` |
-| `mesh/failure/events` | injector → GUI | each corrupt / drop event |
+| `mesh/stats/<unit>` | each node → dashboard | v2 counters + `held` (by priority), `custody_sent/acked`, `retransmits`, `expired`, `dropped_full`, `by_type`, `routes`, `leader`, `term`, `killed` |
+| `mesh/events` | each node → dashboard | one event: retransmit, expired, election, route change, photo, killed / revived |
+| `mesh/base_a/cmd` | mission, dashboard → base A | velocity command `{"linear", "angular"}` |
+| `mesh/base_a/acks` | base A → dashboard | every ACK: round trip, command route, ACK route |
+| `mesh/base_b/telemetry` | base B → dashboard | odometry + route + delay + `late` |
+| `mesh/base_b/photo_cmd` · `mesh/base_b/photo` | dashboard → base B · base B → dashboard | take a photo · progress, then the image + sha256 `ok` |
+| `mesh/coordinator/cmd` | dashboard, `mesh_ctl` → base A | `on` / `off` |
+| `mesh/coordinator/state` | base A → dashboard | the newest `LEADER` heartbeat: leader, term, mode, state, chains, drone targets, routes |
+| `mesh/mission/status` | mission → dashboard | rover x, progress %, assists |
+| `mesh/failure/control` | dashboard, terminal → injector, nodes | e.g. `{"corrupt_probability": 0.2, "drop_probability": 0.05}`, `{"kill": "drone_2"}`, `{"revive": "drone_2"}` |
+| `mesh/failure/events` | injector → dashboard | each corrupt / drop event |
 
 All programs connect only on **`127.0.0.1`** (one hub at `tcp/127.0.0.1:7447`, multicast off), so nothing leaks onto hostel Wi-Fi. That also means everything must run on **one laptop** for now (see section 12).
 
@@ -247,15 +258,15 @@ All programs connect only on **`127.0.0.1`** (one hub at `tcp/127.0.0.1:7447`, m
 
 | Command | What it does |
 |---|---|
-| `ros2 launch mesh_protocol mesh.launch.py` | Starts everything below except the mission and the GUI. Options: `mesh:=on`, `gui:=true`, `mission:=true`, `fake:=true` (no Gazebo), `injector:=none` (use the real injector), `sim:=true` (also start Gazebo) |
-| `ros2 run mesh_protocol mesh_ctl on\|off\|auto\|deploy` | The mesh switch from a terminal (the GUI toggle follows it) |
+| `ros2 launch mesh_protocol mesh.launch.py` | Starts everything below except the mission and the dashboard. Options: `mesh:=on`, `dashboard:=true`, `mission:=true`, `fake:=true` (no Gazebo), `injector:=none` (use the real injector), `sim:=true` (also start Gazebo) |
+| `ros2 run mesh_dashboard dashboard [--port 8080]` | Mission-control dashboard on http://localhost:8080 (localhost only: the controls have no login) |
+| `ros2 run mesh_protocol mesh_ctl on\|off` | The mesh switch from a terminal (the dashboard toggle follows it) |
 | `ros2 run mesh_protocol mission [--speed 0.5] [--no-assist]` | Drive base A → base B. Assist: if the rover gets commands but is stuck for 6 s, it's lifted 1.5 m forward |
 | `ros2 run mesh_protocol mesh_monitor` | Live text view |
 | `ros2 run mesh_protocol send_cmd 1.0 [0.2]` | One drive command from base A (0 = stop) |
 | `ros2 run mesh_protocol move_unit drone_1 0 0 12` / `move_unit home` | Teleport a unit / park all drones (`--fake` without Gazebo) |
-| `ros2 run mesh_protocol selftest` | Whole demo without Gazebo, 19 checks |
-| `ros2 run base_station_gui gui` | GUI placeholder |
-| `ros2 run mesh_protocol coordinator --start on` · `mesh_node --unit drone_1` · `ros2 run mesh_link_model link_model` / `radio_channel` / `passthrough_injector` | Single pieces (normally started by the launch file) |
+| `ros2 run mesh_protocol selftest` | Whole demo without Gazebo, 36 checks |
+| `mesh_node --unit drone_1 [--mesh on] [--fake]` · `ros2 run mesh_link_model link_model` / `radio_channel` / `passthrough_injector` | Single pieces (normally started by the launch file) |
 
 ## 8. Where to plug in your part
 
@@ -264,15 +275,13 @@ All programs connect only on **`127.0.0.1`** (one hub at `tcp/127.0.0.1:7447`, m
 - Run the mesh with `injector:=none` and start yours instead.
 - Never decode packets in the injector. Flip bits in the bytes; the nodes must survive it.
 
-**GUI team:** `src/base_station_gui` is a **placeholder** (see its `README.md`):
-- `mesh_bridge.py` holds all Zenoh in/out and has no Qt code. `set_mesh(True/False)` is the toggle, and `snapshot()` returns positions, links, chains, both base feeds and the mission status. **Keep this file and use it in the real GUI.**
-- `app.py` is the PyQt6 window with the working toggle and 3 status cards, plus 4 dashed TODO boxes (map, packet routes, telemetry plots, failure controls).
-- Merging your existing GUI: put it in this package (or yours), create one `MeshBridge`, connect your switch to `set_mesh`, and in a Qt timer set the switch from `snapshot()["mesh_mode"]`. Never call Zenoh from widgets.
-- Once the GUI is yours, delete `src/base_station_gui/PLACEHOLDER_MARKER`. Setup scripts only ever replace a folder that still has this file.
+**Dashboard (`src/mesh_dashboard`):**
+- `bridge.py` holds all Zenoh in/out: `snapshot()` (everything the page draws), `events()`, `set_mesh`, `set_failure`, `take_photo`. Never call Zenoh anywhere else.
+- `server.py` is a standard-library HTTP server: the page, a Server-Sent Events stream (`/events`), and `POST /api/mesh|failure|photo` (inputs are checked; unknown keys get 400).
+- `static/` is the page: plain HTML/CSS/JS + SVG, **no external URLs** (venue Wi-Fi), checked by `test/test_server.py`.
 
 **Protocol team:**
-- Everything is in `mesh_protocol/mesh_node.py` (one class, one copy per unit).
-- Next steps are in the roadmap: routing table instead of flooding, ACK + retransmit for telemetry.
+- `mesh_node.py` (one class, one copy per unit) wires the pure-logic modules to Zenoh: `store.py` (custody store), `routing.py` (route table), `leader.py` (election + the leader's planning), `photo.py` (chunking). Each has plain-assert tests in `test/` (`python3 -m pytest src/*/test`).
 - Keep the packet format and keys in `mesh_common`. Run `ros2 run mesh_protocol selftest` before pushing.
 
 **Simulation:** see section 9.
@@ -314,8 +323,9 @@ mars_ws/                              ← repo root = ROS 2 workspace
     ├── mesh_common/                  ← names, layout, Zenoh keys, packet format + CRC
     ├── mesh_link_model/              ← terrain + line of sight, link model, radio channel,
     │                                    relay planner, teleport helper, stand-in injector
-    ├── mesh_protocol/                ← mesh node, coordinator, mission, tools, self-test, launch
-    └── base_station_gui/             ← GUI PLACEHOLDER (PyQt6) + mesh_bridge.py
+    ├── mesh_protocol/                ← mesh node (DTN), store, routing, leader election, photo,
+    │                                    mission, tools, self-test, launch
+    └── mesh_dashboard/               ← mission-control web dashboard (server + offline page)
 ```
 `build/`, `install/` and `log/` come from `colcon build` and are **not** in git.
 
@@ -348,16 +358,15 @@ Not sure which version is right? Ask whoever made the other change.
 | `ModuleNotFoundError: No module named 'zenoh'` | `pip install --user --break-system-packages eclipse-zenoh` |
 | `No module named 'gz.transport13'` | `sudo apt install -y python3-gz-transport13 python3-gz-msgs10` |
 | `No module named 'PyQt6'` | `sudo apt install -y python3-pyqt6` |
-| `qt.qpa.plugin: Could not load the Qt platform plugin "xcb"` | `sudo apt install -y libxcb-cursor0` |
 | `error: externally-managed-environment` (pip) | add `--break-system-packages` |
 | `No module named mesh_common` / `Package 'mesh_protocol' not found` | `cd ~/mars_ws && source install/setup.bash` in that terminal |
 | `[link_model] WARNING: no position yet` | Gazebo isn't running or is paused (press ▶). Check `gz topic -l \| grep pose` |
-| GUI: "coordinator not running" | Start T2 first |
+| Dashboard shows OFFLINE / no leader | Start T2 first; the drones elect a leader about 2 s after they start |
 | Drones don't move | Check `gz service -l \| grep set_pose`; the world must be `mars_world` |
 | Rover doesn't move | Mesh OFF and rover in the crater = no link (that's the demo). Otherwise press ▶ or check `gz topic -l \| grep rover` |
 | `ASSIST #n` lines in the mission | The rover slipped on the ~31° crater wall and was lifted forward. Occasional is fine |
 | `Address already in use` (port 7447) | An old launch is still running: `pkill -f "mesh_protocol\|mesh_link_model"` |
-| GUI on another laptop sees nothing | On purpose for now: everything only connects on 127.0.0.1 (one laptop). Running the GUI on a second laptop needs a Zenoh network config change; ask the sim team first |
+| Dashboard on another laptop sees nothing | On purpose: it listens on 127.0.0.1 only (its controls have no login). `--host 0.0.0.0` opens it to the network |
 | Self-test fails | Read the `FAIL` lines and `/tmp/mesh_selftest.log` |
 | `SSL certificate problem` on campus Wi-Fi | Use a phone hotspot |
 | `Unable to find uri[model://...]` | `colcon build --symlink-install && source install/setup.bash` |
@@ -374,9 +383,11 @@ More in [`ERRORS.md`](ERRORS.md).
 - [x] Mesh protocol v2: HELLO neighbours, roles, COMMAND / ACK / TELEMETRY, rover watchdog
 - [x] Coordinator: mesh ON/OFF/AUTO, relay planning with all 4 drones, follow the rover without gaps
 - [x] Mission: base A drives the rover to base B over the mesh
-- [x] GUI placeholder with the mesh toggle
+- [x] GUI placeholder with the mesh toggle (replaced in v3)
 - [ ] Failure injection package: bit flips, drops, delay, kill / revive units, scripted failures
-- [ ] Protocol v3: routing table instead of flooding, ACK + retransmit for telemetry, re-routing when a drone fails
-- [ ] Real GUI: merge the team GUI with `mesh_bridge.py` (map, links, packet routes, plots, failure controls)
+- [x] Protocol v3 (DTN): custody transfer, store and forward, lifetimes, priorities, routed bundles, re-routing when a drone fails
+- [x] Coordinator on an elected leader drone (kill it: another takes over)
+- [x] Mission-control web dashboard (map, routes, held bundles, delivery, late odometry, events, photo, failure controls)
+- [x] Rover photo transfer in chunks with a sha256 check
 - [ ] Drones that fly (velocity control) instead of teleporting
 - [ ] Final demo: rover enters crater → link lost → mesh ON → both bases connected → corruption on → a drone fails → re-route
