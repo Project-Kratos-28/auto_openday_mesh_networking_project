@@ -27,10 +27,11 @@ from collections import OrderedDict
 
 from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED, SEND_RATE, LATE_AFTER,
                          LEASE, KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD,
-                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, key_tx, key_rx, key_stats,
+                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO_B, KEY_PHOTO_CMD, key_tx, key_rx, key_stats,
                          make_packet, encode, decode, expired, bundle_id, open_session)
 from mesh_link_model.sim_io import teleport
 from mesh_protocol.leader import Election
+from mesh_protocol.photo import Reassembler, chunks, photo_bytes
 from mesh_protocol.store import BundleStore
 
 NEIGHBOUR_TIMEOUT = 1.5        # seconds without HELLO -> neighbour gone
@@ -92,6 +93,9 @@ class MeshNode:
             self.subs.append(s.declare_subscriber(KEY_COORD_CMD, self.on_mesh_request))
         if unit == RECEIVER:
             self.pub_odom = s.declare_publisher(KEY_ODOM_B)
+            self.pub_photo = s.declare_publisher(KEY_PHOTO_B)
+            self.photo, self.photo_logged = Reassembler(), None
+            self.subs.append(s.declare_subscriber(KEY_PHOTO_CMD, lambda _: self.originate("rover", "PHOTO_REQ", {})))
         role = {"rover": "rover", COMMANDER: "commander base", RECEIVER: "receiver base"}.get(unit, "relay drone")
         self.log(f"started as {role}")
 
@@ -276,6 +280,23 @@ class MeshNode:
             self.originate(pkt["src"], "ACK", {"ack_seq": pkt["seq"], "cmd_sent_time": pkt["sent_time"],
                                                "cmd_route": route, "moving": self.moving,
                                                "cmd_age_ms": delay_ms})
+        elif self.unit == "rover" and pkt["type"] == "PHOTO_REQ":
+            try:
+                parts = chunks(photo_bytes(), pkt["seq"])
+            except OSError as e:
+                self.log(f"no photo to send: {e}")
+                return
+            self.log(f"taking a photo: {len(parts)} chunks to {pkt['src']} (bulk priority)")
+            for c in parts:
+                self.originate(pkt["src"], "PHOTO_CHUNK", c)
+        elif self.unit == RECEIVER and pkt["type"] == "PHOTO_CHUNK":
+            prog = self.photo.add(p)
+            self.pub_photo.put(json.dumps(prog))
+            if prog["done"] or prog["received"] % 20 == 0:
+                self.event("photo", received=prog["received"], total=prog["total"], ok=prog.get("ok"))
+            if prog["done"] and self.photo_logged != prog["photo_id"]:
+                self.photo_logged = prog["photo_id"]
+                self.log(f"photo #{prog['photo_id']} complete, sha256 {'OK' if prog['ok'] else 'MISMATCH'}")
         elif self.unit == COMMANDER and pkt["type"] == "ACK":
             rtt = round((now - p.get("cmd_sent_time", now)) * 1000, 1)
             self.pub_acks.put(json.dumps({"time": now, "ack_seq": p.get("ack_seq"), "rtt_ms": rtt,

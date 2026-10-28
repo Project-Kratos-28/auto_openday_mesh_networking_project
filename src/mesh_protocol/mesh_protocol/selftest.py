@@ -25,6 +25,7 @@ os.environ["MESH_HUB"] = PORT                          # must be set before mesh
 
 from mesh_common import (UNITS, DRONES, START_XY, CRATER_RADIUS, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,  # noqa: E402
                          KEY_COORD_CMD, KEY_MISSION, KEY_FAKE_POSE, KEY_FAKE_CMD_VEL, KEY_FAIL_CONTROL,
+                         KEY_PHOTO_B, KEY_PHOTO_CMD,
                          open_session)
 
 MAX_GAP = 1.5      # s: odometry is sent every 0.5 s, so a gap above this means the flow broke
@@ -46,7 +47,7 @@ def main():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name} {detail}", flush=True)
 
     lock = threading.Lock()
-    st = {"acks": [], "odoms": [], "coord": None, "mission": None, "stats": {}, "max_held": 0}
+    st = {"acks": [], "odoms": [], "coord": None, "mission": None, "stats": {}, "max_held": 0, "photo": None}
 
     def on_stats(x):
         m = json.loads(x.payload.to_bytes())
@@ -110,7 +111,7 @@ def main():
         s = open_session()
         subs = [s.declare_subscriber(KEY_ACKS_A, rec("acks")), s.declare_subscriber(KEY_ODOM_B, rec("odoms")),  # noqa
                 s.declare_subscriber(KEY_COORD_STATE, rec("coord")), s.declare_subscriber(KEY_MISSION, rec("mission")),
-                s.declare_subscriber("mesh/stats/*", on_stats)]
+                s.declare_subscriber("mesh/stats/*", on_stats), s.declare_subscriber(KEY_PHOTO_B, rec("photo"))]
 
         print("\nTest 1: start, mesh OFF")
         check("base A talks to the rover directly", wait_for(lambda: age("acks") is not None and age("acks") < 1.5, 20))
@@ -210,6 +211,20 @@ def main():
         s.put(KEY_FAIL_CONTROL, json.dumps({"revive": old2}))
         check("revived drones accept the current leader",
               wait_for(lambda: all(st["stats"].get(u, {}).get("leader") == coord("leader") for u in (old, old2)), 8))
+
+        print("\nTest 4f: rover photo to base B with 10 % packet loss")
+        wait_for(lambda: coord("state") == "DEPLOYED" and age("odoms") < 1.0, 10)
+        t0 = time.time()
+        s.put(KEY_FAIL_CONTROL, json.dumps({"drop_probability": 0.1}))
+        s.put(KEY_PHOTO_CMD, json.dumps({"time": t0}))
+        ok = wait_for(lambda: (st["photo"] or {}).get("done"), 90)
+        t1 = time.time()
+        s.put(KEY_FAIL_CONTROL, json.dumps({"drop_probability": 0.0}))
+        ph = st["photo"] or {}
+        check("photo arrived complete with a matching sha256", ok and ph.get("ok"),
+              f"({ph.get('received')}/{ph.get('total')} chunks in {t1 - t0:.0f} s)")
+        g_b = longest_gap(times("odoms", t0, t1), t0, t1)
+        check("odometry kept flowing during the photo (priority)", g_b < MAX_GAP, f"(longest gap {g_b:.1f} s)")
 
         print("\nTest 5: second journey, mesh ON from the start")
         s.put(KEY_COORD_CMD, "off")

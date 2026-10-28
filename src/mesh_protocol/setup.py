@@ -10,7 +10,7 @@ setup(
     packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/mesh_protocol']),
-        ('share/mesh_protocol', ['package.xml']),
+        ('share/mesh_protocol', ['package.xml', 'resource/photo.png']),
         (os.path.join('share', 'mesh_protocol', 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
