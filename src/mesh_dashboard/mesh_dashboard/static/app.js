@@ -15,7 +15,7 @@ function svg(tag, attrs, parent) {
 }
 const mx = (x) => ((x - X0) / (X1 - X0)) * 1000;
 const mz = (z) => 300 - ((z - Z0) / (Z1 - Z0)) * 300;
-const pct = (a, b) => (b ? Math.round((100 * a) / b) + " %" : "-");
+const pct = (a, b) => (b ? Math.min(100, Math.round((100 * a) / b)) + " %" : "-");   // counters arrive 1/s per node
 const fmtT = (s) => { s = Math.max(0, Math.floor(s)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
 const short = (u) => (u || "").replace("drone_", "D").replace("base_", "BASE ").toUpperCase();
 
@@ -63,8 +63,8 @@ function drawMap(s) {
       "text-anchor": "middle" }, m).textContent = short(u) + (dead ? " ✕" : "");
     const held = st.held ? (st.held[0] || 0) + (st.held[1] || 0) + (st.held[2] || 0) : 0;
     if (held > 0) {
-      svg("rect", { x: x + 9, y: z - 26, width: 34, height: 16, rx: 3, fill: "var(--warn)" }, m);
-      svg("text", { x: x + 26, y: z - 14, fill: "#000", "font-size": 11, "text-anchor": "middle" }, m).textContent = "▣" + held;
+      svg("rect", { x: x + 10, y: z + 2, width: 34, height: 16, rx: 3, fill: "var(--warn)" }, m);
+      svg("text", { x: x + 27, y: z + 14, fill: "#000", "font-size": 11, "text-anchor": "middle" }, m).textContent = "▣" + held;
     }
   }
 }
