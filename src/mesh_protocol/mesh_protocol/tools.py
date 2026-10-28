@@ -167,14 +167,15 @@ def mesh_monitor():
                 out.append("  " + "   ".join(up[i:i + 4]))
             if not up:
                 out.append("  (none)")
-            out += ["", f"{'unit':>8} {'relay':>5} {'sent':>6} {'recv':>6} {'fwd':>6} {'deliv':>6} "
-                        f"{'dup':>6} {'badCRC':>6}  neighbours"]
+            out += ["", f"{'unit':>8} {'held':>5} {'sent':>6} {'recv':>6} {'fwd':>6} {'deliv':>6} "
+                        f"{'resend':>6} {'expd':>5} {'dup':>5} {'badCRC':>6}  neighbours"]
             for u in UNITS:
                 x = c["stats"].get(u)
                 if x:
-                    rl = '' if x.get('relay') is None else ('ON' if x['relay'] else 'off')
-                    out.append(f"{u:>8} {rl:>5} {x['sent']:6} {x['received']:6} "
-                               f"{x['forwarded']:6} {x['delivered']:6} {x['duplicates']:6} {x['bad_crc']:6}  "
+                    held = 'DEAD' if x.get('killed') else sum(x.get('held', {}).values())
+                    out.append(f"{u:>8} {held:>5} {x['sent']:6} {x['received']:6} {x['forwarded']:6} "
+                               f"{x['delivered']:6} {x['retransmits']:6} {x['expired']:5} {x['duplicates']:5} "
+                               f"{x['bad_crc']:6}  "
                                f"{', '.join(x['neighbours']) or '-'}")
                 else:
                     out.append(f"{u:>8}   (no stats yet - is its mesh_node running?)")

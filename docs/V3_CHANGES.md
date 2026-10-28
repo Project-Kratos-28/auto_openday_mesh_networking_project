@@ -16,7 +16,7 @@ stop after any step: each one leaves a working demo.
 
 | # | Step | Status | Notes |
 |---|---|---|---|
-| 1 | DTN protocol: custody, store, expiry, priority, routes | todo | routes computed by the old coordinator process at first |
+| 1 | DTN protocol: custody, store, expiry, priority, routes | done | routes computed by the old coordinator process (until step 3). Self-test 26/26 in fake mode |
 | 2 | Web dashboard (`mesh_dashboard`), PyQt GUI removed | todo | |
 | 3 | Coordinator on a drone (election), old coordinator process removed | todo | |
 | 4 | Photo transfer | todo | |

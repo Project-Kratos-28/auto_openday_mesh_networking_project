@@ -133,4 +133,6 @@ def candidate_paths():
     except Exception:
         pass
     paths.append(os.path.join(os.path.expanduser("~/mars_ws/src/mars_sim"), rel))
+    here = os.path.dirname(os.path.abspath(__file__))           # source checkout in any folder
+    paths.append(os.path.join(here, "..", "..", "mars_sim", rel))
     return paths

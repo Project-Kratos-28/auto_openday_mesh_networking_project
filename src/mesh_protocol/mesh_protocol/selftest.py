@@ -23,7 +23,8 @@ PORT = "tcp/127.0.0.1:7457"
 os.environ["MESH_HUB"] = PORT                          # must be set before mesh_common is imported
 
 from mesh_common import (UNITS, DRONES, START_XY, CRATER_RADIUS, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE,  # noqa: E402
-                         KEY_COORD_CMD, KEY_MISSION, KEY_FAKE_POSE, KEY_FAKE_CMD_VEL, open_session)
+                         KEY_COORD_CMD, KEY_MISSION, KEY_FAKE_POSE, KEY_FAKE_CMD_VEL, KEY_FAIL_CONTROL,
+                         open_session)
 
 MAX_GAP = 1.5      # s: odometry is sent every 0.5 s, so a gap above this means the flow broke
 
@@ -44,7 +45,23 @@ def main():
         print(f"  [{'PASS' if ok else 'FAIL'}] {name} {detail}", flush=True)
 
     lock = threading.Lock()
-    st = {"acks": [], "odoms": [], "coord": None, "mission": None}
+    st = {"acks": [], "odoms": [], "coord": None, "mission": None, "stats": {}, "max_held": 0}
+
+    def on_stats(x):
+        m = json.loads(x.payload.to_bytes())
+        with lock:
+            st["stats"][str(x.key_expr).split("/")[-1]] = m
+            st["max_held"] = max(st["max_held"], sum(m.get("held", {}).values()))
+
+    def total(field):
+        with lock:
+            return sum(m.get(field, 0) for m in st["stats"].values())
+
+    def missing_seqs(t0=0.0, t1=None):
+        """Telemetry seqs sent in [t0, t1] that base B never got (between the first and last it got)."""
+        with lock:
+            got = {m["seq"] for m in st["odoms"] if m["sent_time"] >= t0 and (t1 is None or m["sent_time"] <= t1)}
+        return sorted(set(range(min(got), max(got) + 1)) - got) if got else None
 
     def rec(key):
         def cb(x):
@@ -92,7 +109,8 @@ def main():
         start("mesh_protocol.coordinator", "--fake", "--start", "off")
         s = open_session()
         subs = [s.declare_subscriber(KEY_ACKS_A, rec("acks")), s.declare_subscriber(KEY_ODOM_B, rec("odoms")),  # noqa
-                s.declare_subscriber(KEY_COORD_STATE, rec("coord")), s.declare_subscriber(KEY_MISSION, rec("mission"))]
+                s.declare_subscriber(KEY_COORD_STATE, rec("coord")), s.declare_subscriber(KEY_MISSION, rec("mission")),
+                s.declare_subscriber("mesh/stats/*", on_stats)]
 
         print("\nTest 1: start, mesh OFF")
         check("base A talks to the rover directly", wait_for(lambda: age("acks") is not None and age("acks") < 1.5, 20))
@@ -109,6 +127,9 @@ def main():
         time.sleep(3)
         check("mesh stays OFF: nothing deployed", coord("state") == "STANDBY" and not coord("relay"))
         check("base B still receives nothing", len(st["odoms"]) == 0)
+        check("DTN: odometry is held during the outage", wait_for(lambda: st["max_held"] > 5, 5),
+              f"(max held {st['max_held']})")
+        check("DTN: old commands expired instead of being sent", total("expired") > 0, f"({total('expired')})")
 
         print("\nTest 3: toggle ON")
         t_on = time.time()
@@ -120,6 +141,12 @@ def main():
         check("all 4 drones in the relay chains", used == DRONES, f"({ch})")
         check("base A connected again", wait_for(lambda: age("acks") is not None and age("acks") < 1.5, 8))
         check("base B receives odometry", wait_for(lambda: age("odoms") is not None and age("odoms") < 1.5, 8))
+        time.sleep(3)
+        with lock:
+            n_late = sum(1 for m in st["odoms"] if m["late"])
+        miss = missing_seqs()
+        check("DTN: every odometry sample from the outage reached base B", miss == [] and n_late > 0,
+              f"({n_late} late, missing {miss if miss is None else len(miss)})")
 
         print("\nTest 4: rover drives on to base B with the mesh ON")
         t_flow = time.time()
@@ -132,6 +159,31 @@ def main():
         g_a = longest_gap(times("acks", t_flow), t_flow, t_end)
         check("odometry reached base B the whole way", g_b < MAX_GAP, f"(longest gap {g_b:.1f} s)")
         check("base A kept its connection", g_a < 2.5, f"(longest ACK gap {g_a:.1f} s)")
+
+        with lock:
+            ages = [m.get("cmd_age_ms") or 0 for m in st["acks"]]
+        check("DTN: the rover never applied a command older than 1 s", max(ages) <= 1000,
+              f"(oldest {max(ages):.0f} ms)")
+
+        print("\nTest 4b: 10 % of packets lost (custody transfer resends)")
+        r0, t0 = total("retransmits"), time.time()
+        s.put(KEY_FAIL_CONTROL, json.dumps({"drop_probability": 0.1}))
+        time.sleep(20)
+        s.put(KEY_FAIL_CONTROL, json.dumps({"drop_probability": 0.0}))
+        t1 = time.time()
+        time.sleep(4)
+        miss = missing_seqs(t0, t1)
+        check("odometry complete despite 10 % loss", miss == [], f"(missing {miss})")
+        check("lost bundles were resent", total("retransmits") > r0, f"({total('retransmits') - r0} resends)")
+
+        print("\nTest 4c: 20 % of packets corrupted")
+        b0 = total("bad_crc")
+        s.put(KEY_FAIL_CONTROL, json.dumps({"corrupt_probability": 0.2}))
+        time.sleep(15)
+        s.put(KEY_FAIL_CONTROL, json.dumps({"corrupt_probability": 0.0}))
+        time.sleep(2)
+        check("corrupted packets caught by the CRC", total("bad_crc") > b0, f"({total('bad_crc') - b0})")
+        check("no program crashed under corruption", all(p.poll() is None for p in procs if p is not mission))
 
         print("\nTest 5: second journey, mesh ON from the start")
         s.put(KEY_COORD_CMD, "off")

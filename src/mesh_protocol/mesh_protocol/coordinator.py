@@ -17,11 +17,12 @@ import math
 import threading
 import time
 
-from mesh_common import (DRONES, START_XY, DRONE_HOVER, REPLAN_DISTANCE, KEY_POSITIONS, KEY_ACKS_A,
+from mesh_common import (UNITS, KEY_LINKS, DRONES, START_XY, DRONE_HOVER, REPLAN_DISTANCE, KEY_POSITIONS, KEY_ACKS_A,
                          KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD, open_session)
 from mesh_link_model.terrain import Terrain
 from mesh_link_model.planner import plan, link_ok, antenna
 from mesh_link_model.sim_io import teleport
+from mesh_protocol.routing import compute_routes
 
 LOST_AFTER = 3.0          # s without an ACK at base A = rover unreachable (auto mode)
 LOOK_AHEAD = 3.0          # s: re-place drones if a chain would break within this time
@@ -59,7 +60,7 @@ def main():
 
     terrain = Terrain.load()
     lock = threading.Lock()
-    st = {"pos": {}, "last_ack": 0.0, "last_odom": 0.0, "request": None}
+    st = {"pos": {}, "last_ack": 0.0, "last_odom": 0.0, "request": None, "edges": {}}
     s = open_session()
     park = {d: (*START_XY[d], round(terrain.ground(*START_XY[d]) + DRONE_HOVER, 2)) for d in DRONES}
 
@@ -67,6 +68,11 @@ def main():
         m = json.loads(x.payload.to_bytes())
         with lock:
             st["pos"] = {u: tuple(p) for u, p in m["positions"].items()}
+
+    def on_links(x):
+        table = json.loads(x.payload.to_bytes())["links"]
+        with lock:
+            st["edges"] = {(l["a"], l["b"]): l["quality"] for l in table if l["up"]}
 
     def on_ack(x):
         with lock:
@@ -82,7 +88,8 @@ def main():
             st["request"] = c
 
     subs = [s.declare_subscriber(KEY_POSITIONS, on_pos), s.declare_subscriber(KEY_ACKS_A, on_ack),  # noqa
-            s.declare_subscriber(KEY_ODOM_B, on_odom), s.declare_subscriber(KEY_COORD_CMD, on_cmd)]
+            s.declare_subscriber(KEY_ODOM_B, on_odom), s.declare_subscriber(KEY_COORD_CMD, on_cmd),
+            s.declare_subscriber(KEY_LINKS, on_links)]
     pub = s.declare_publisher(KEY_COORD_STATE)
     log = lambda t: print(f"[coordinator] {t}", flush=True)   # noqa: E731
 
@@ -154,10 +161,13 @@ def main():
         with lock:
             ack_age = now - st["last_ack"] if st["last_ack"] else None
             odom_age = now - st["last_odom"] if st["last_odom"] else None
+            edges = dict(st["edges"])
+        # mesh ON: drones (and the rover, which links the two chains) may relay; OFF: direct links only
+        routes = compute_routes(edges, UNITS, DRONES + ["rover"] if S["relay"] else [])
         pub.put(json.dumps({"time": now, "mode": S["mode"], "state": S["state"], "relay": S["relay"],
                             "reason": S["reason"], "chains": S["chains"], "on_since": S["on_since"],
                             "targets": {d: list(p) for d, p in S["targets"].items()},
-                            "ack_age": ack_age, "odom_age": odom_age}))
+                            "ack_age": ack_age, "odom_age": odom_age, "routes": routes}))
 
     log(f"started, mesh mode = {S['mode'].upper()}. Terrain: {terrain.describe()}")
     t_start, next_check, next_pub = time.time(), 0.0, 0.0
