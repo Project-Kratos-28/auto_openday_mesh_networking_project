@@ -17,6 +17,8 @@
 #   --build              force a colcon build first
 #   --tunnel             open a Cloudflare quick tunnel and print its https URL
 #   --no-tunnel          never use a tunnel (default)
+#   --qr                 open a separate window with a scannable QR code (default on)
+#   --no-qr              do not open the QR window
 #   --detach             do not stay in the foreground / do not stop on Ctrl-C
 #
 # Everything it starts is recorded in $MARS_DEMO_DIR (default /tmp/mars_demo), with one log per
@@ -37,6 +39,7 @@ FAKE=
 MISSION=1
 BUILD=0
 TUNNEL=0
+QR=1
 DETACH=0
 
 c_ok()   { printf '\033[32m%s\033[0m\n' "$*" >&2; }
@@ -66,9 +69,30 @@ stop_one() {                    # stop_one NAME
     local name=$1 p
     p=$(pids "$name") || return 0
     if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
-        kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null
+        if role_ok "$name" "$p"; then
+            kill -TERM -- "-$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null
+            local i
+            for i in $(seq 1 30); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+            kill -0 "$p" 2>/dev/null && kill -KILL -- "-$p" 2>/dev/null
+        else
+            c_warn "ignoring stale $name.pid ($p is not ours)"
+        fi
     fi
     rm -f "$RUN_DIR/$name.pid"
+}
+
+# A pidfile can go stale and its PID get reused by something else (including your shell).
+# Only signal a process group whose command line still looks like the thing we started.
+role_ok() {                     # role_ok NAME PID
+    local name=$1 p=$2 cmd
+    cmd=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || return 1
+    case $name in
+        launch)    [[ $cmd == *mesh_protocol* || $cmd == *"ros2 launch"* ]] ;;
+        dashboard) [[ $cmd == *dashboard* ]] ;;
+        tunnel)    [[ $cmd == *cloudflared* ]] ;;
+        qr)        [[ $cmd == *show_qr.sh* ]] ;;
+        *)         return 1 ;;
+    esac
 }
 
 wait_http() {                   # wait_http URL SECONDS
@@ -143,12 +167,79 @@ start_tunnel() {
     return 1
 }
 
+# ---------------------------------------------------------------- QR code
+# QRENCODE is a command array: either the system binary or a copy unpacked from Ubuntu's .deb,
+# which needs no sudo (apt-get download + dpkg-deb -x).
+QRENCODE=()
+
+ensure_qrencode() {
+    [ ${#QRENCODE[@]} -gt 0 ] && return 0
+    if have qrencode; then QRENCODE=(qrencode); return 0; fi
+
+    local dir=$RUN_DIR/qrencode bin lib
+    bin=$dir/root/usr/bin/qrencode
+    if [ ! -x "$bin" ]; then
+        say "fetching qrencode (~50 kB, no sudo)"
+        mkdir -p "$dir"
+        ( cd "$dir" && apt-get download qrencode libqrencode4 >/dev/null 2>&1 ) || true
+        local deb
+        for deb in "$dir"/*.deb; do [ -f "$deb" ] && dpkg-deb -x "$deb" "$dir/root" 2>/dev/null; done
+    fi
+    [ -x "$bin" ] || return 1
+    lib=$(find "$dir/root/usr/lib" -name 'libqrencode.so.4*' -printf '%h\n' 2>/dev/null | head -1)
+    if [ -n "$lib" ]; then QRENCODE=(env "LD_LIBRARY_PATH=$lib" "$bin"); else QRENCODE=("$bin"); fi
+}
+
+show_qr() {                     # show_qr URL [TITLE]
+    local url=$1 title=${2:-Mars relay mesh}
+    ensure_qrencode || {
+        c_warn "qrencode unavailable (sudo apt install qrencode) — link not shown as a QR"
+        c_ok "$url"
+        return 0
+    }
+    mkdir -p "$RUN_DIR"
+    "${QRENCODE[@]}" -o "$RUN_DIR/qr.png" -s 8 -m 2 "$url" 2>/dev/null \
+        && say "QR image: $RUN_DIR/qr.png"
+    { printf '%s\n' "$url"; [ -n "$PASSCODE" ] && printf 'passcode: %s\n' "$PASSCODE"; } > "$RUN_DIR/link.txt"
+
+    # A helper script keeps the quoting sane and holds the window open.
+    cat > "$RUN_DIR/show_qr.sh" <<EOF
+#!/usr/bin/env bash
+echo \$\$ > "$RUN_DIR/qr.pid"
+clear
+${QRENCODE[*]} -t ANSIUTF8 -m 2 "$url"
+echo
+echo "  $url"
+$([ -n "$PASSCODE" ] && echo "echo \"  passcode: $PASSCODE\"")
+echo
+echo "  Scan with a phone camera. Close this window when you are done."
+while :; do sleep 3600; done
+EOF
+    chmod +x "$RUN_DIR/show_qr.sh"
+
+    if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+        if have gnome-terminal; then
+            gnome-terminal --title="$title — scan to watch" -- "$RUN_DIR/show_qr.sh" >/dev/null 2>&1 && return 0
+        fi
+        have x-terminal-emulator && x-terminal-emulator -T "$title" -e "$RUN_DIR/show_qr.sh" >/dev/null 2>&1 && return 0
+        have xterm && xterm -T "$title" -hold -e "$RUN_DIR/show_qr.sh" >/dev/null 2>&1 && return 0
+        have eog && eog "$RUN_DIR/qr.png" >/dev/null 2>&1 && return 0
+        have xdg-open && xdg-open "$RUN_DIR/qr.png" >/dev/null 2>&1 && return 0
+    fi
+    # No display: draw it in this terminal and keep going.
+    "${QRENCODE[@]}" -t ANSIUTF8 -m 2 "$url"
+    c_ok "$url"
+}
+
 # ---------------------------------------------------------------- commands
 cmd_start() {
     mkdir -p "$LOG_DIR" "$RUN_DIR"
-    if alive launch || alive dashboard; then
+    local p
+    if { p=$(pids launch); [ -n "$p" ] && role_ok launch "$p"; } \
+       || { p=$(pids dashboard); [ -n "$p" ] && role_ok dashboard "$p"; }; then
         c_bad "already running — use '$0 stop' first (or '$0 status')"; return 1
     fi
+    rm -f "$RUN_DIR"/*.pid 2>/dev/null   # stale leftovers must never steer a later stop
 
     say "workspace $ROOT"
     ros_source || return 1
@@ -186,18 +277,32 @@ cmd_start() {
 
     echo
     c_ok "dashboard: http://127.0.0.1:$PORT/"
-    local ip
+    local ip lan_first=
     while read -r ip; do
-        [ -n "$ip" ] && c_ok "         : http://$ip:$PORT/"
+        [ -n "$ip" ] || continue
+        [ -z "$lan_first" ] && lan_first=$ip
+        c_ok "         : http://$ip:$PORT/"
     done < <(lan_ips)
-    if [ "$HOST" = 0.0.0.0 ] && ! lan_ips | grep -q .; then
+    if [ "$HOST" = 0.0.0.0 ] && [ -z "$lan_first" ]; then
         c_warn "only loopback addresses found — this VM looks NAT'd (10.0.2.x / 192.168.64.x); use --tunnel"
     fi
 
+    local public=
     if [ "$TUNNEL" = 1 ]; then
         say "opening Cloudflare quick tunnel"
-        local url
-        if url=$(start_tunnel); then c_ok "public    : $url"; else c_warn "tunnel failed; LAN only"; fi
+        if public=$(start_tunnel); then c_ok "public    : $public"; else c_warn "tunnel failed; LAN only"; fi
+    fi
+
+    if [ "$QR" = 1 ]; then
+        if [ -n "$public" ]; then
+            say "QR window (tunnel link)"
+            show_qr "$public" "Mars relay mesh — public"
+        elif [ -n "$lan_first" ]; then
+            say "QR window (LAN link)"
+            show_qr "http://$lan_first:$PORT/" "Mars relay mesh — LAN"
+        else
+            c_warn "no reachable URL to encode (NAT'd VM) — run with --tunnel"
+        fi
     fi
 
     [ -n "$PASSCODE" ] && c_warn "controls passcode: $PASSCODE" || c_warn "controls are UNLOCKED (empty passcode)"
@@ -223,12 +328,7 @@ cmd_start() {
 
 cmd_stop() {
     local name
-    for name in launch dashboard tunnel; do stop_one "$name"; done
-    sleep 3
-    for name in launch dashboard tunnel; do
-        local p; p=$(pids "$name")
-        [ -n "$p" ] && kill -KILL -- "-$p" 2>/dev/null
-    done
+    for name in launch dashboard tunnel qr; do stop_one "$name"; done
     rm -f "$RUN_DIR"/*.pid
     if port_busy 7447 || port_busy "$PORT"; then
         c_warn "some ports are still busy: $(ss -tln 2>/dev/null | grep -E ":(7447|$PORT) " | awk '{print $4}' | tr '\n' ' ')"
@@ -239,7 +339,7 @@ cmd_stop() {
 
 cmd_status() {
     local name p
-    for name in launch dashboard tunnel; do
+    for name in launch dashboard tunnel qr; do
         p=$(pids "$name")
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then printf '%-10s running (pid %s)\n' "$name" "$p"
         else printf '%-10s not running\n' "$name"; fi
@@ -281,6 +381,8 @@ while [ $# -gt 0 ]; do
         --build)     BUILD=1; shift ;;
         --tunnel)    TUNNEL=1; shift ;;
         --no-tunnel) TUNNEL=0; shift ;;
+        --qr)        QR=1; shift ;;
+        --no-qr)     QR=0; shift ;;
         --detach)    DETACH=1; shift ;;
         -h|--help)   usage; exit 0 ;;
         *) c_bad "unknown option: $1"; usage; exit 1 ;;
