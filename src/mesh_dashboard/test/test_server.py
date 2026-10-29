@@ -41,9 +41,25 @@ def server():
     srv.shutdown()
 
 
-def post(url, body):
+@pytest.fixture
+def open_server():
+    """A server with the passcode check switched off (loopback demos)."""
+    b = FakeBridge()
+    srv = make_server(b, port=0, passcode="")
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}", b
+    srv.shutdown()
+
+
+PASSCODE = "kratos123"
+
+
+def post(url, body, passcode=PASSCODE):
+    headers = {"Content-Type": "application/json"}
+    if passcode is not None:
+        headers["X-Passcode"] = passcode
     req = urllib.request.Request(url, data=body if isinstance(body, bytes) else json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers=headers, method="POST")
     try:
         return urllib.request.urlopen(req, timeout=3).status
     except urllib.error.HTTPError as e:
@@ -125,6 +141,38 @@ def test_no_external_urls():
         text = open(os.path.join(STATIC, name), encoding="utf-8").read()
         text = text.replace("http://www.w3.org/2000/svg", "")     # SVG namespace name, never fetched
         assert "http://" not in text and "https://" not in text, name
+
+
+def test_watching_is_public(server):
+    """The page and the event stream stay open: only the controls need the passcode."""
+    url, _ = server
+    assert urllib.request.urlopen(url + "/", timeout=3).status == 200
+    assert urllib.request.urlopen(url + "/events", timeout=3).status == 200
+
+
+def test_post_without_passcode_refused(server):
+    url, b = server
+    assert post(url + "/api/mesh", {"on": True}, passcode=None) == 401
+    assert post(url + "/api/photo", {}, passcode=None) == 401
+    assert b.calls == []
+
+
+def test_post_with_wrong_passcode_refused(server):
+    url, b = server
+    assert post(url + "/api/failure", {"kill": "drone_1"}, passcode="letmein") == 401
+    assert b.calls == []
+
+
+def test_post_with_right_passcode_accepted(server):
+    url, b = server
+    assert post(url + "/api/mesh", {"on": True}, passcode="kratos123") == 200
+    assert b.calls == [("mesh", True)]
+
+
+def test_passcode_check_can_be_disabled(open_server):
+    url, b = open_server
+    assert post(url + "/api/mesh", {"on": False}, passcode=None) == 200
+    assert b.calls == [("mesh", False)]
 
 
 def test_text_plain_post_refused(server):
