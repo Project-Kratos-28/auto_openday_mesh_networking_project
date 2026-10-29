@@ -70,8 +70,17 @@ class Bridge:
                 self._d[key], self._d[key + "_t"] = m, time.time()
         return cb
 
+    @staticmethod
+    def _json(sample):
+        try:
+            return json.loads(sample.payload.to_bytes())
+        except ValueError:
+            return None
+
     def _on_odom(self, sample):
-        m = json.loads(sample.payload.to_bytes())
+        m = self._json(sample)
+        if not isinstance(m, dict) or "seq" not in m:
+            return
         truth = (m.get("payload") or {}).get("truth") or {}
         odom = (m.get("payload") or {}).get("odom") or {}
         x = (truth.get("pos") or [odom.get("x")])[0]
@@ -82,22 +91,30 @@ class Bridge:
                                    "late": bool(m.get("late"))})
 
     def _on_links(self, sample):
-        with self._lock:
-            self._d["links"] = json.loads(sample.payload.to_bytes())["links"]
+        m = self._json(sample)
+        if isinstance(m, dict) and "links" in m:
+            with self._lock:
+                self._d["links"] = m["links"]
 
     def _on_pos(self, sample):
-        with self._lock:
-            self._d["positions"] = json.loads(sample.payload.to_bytes())["positions"]
+        m = self._json(sample)
+        if isinstance(m, dict) and "positions" in m:
+            with self._lock:
+                self._d["positions"] = m["positions"]
 
     def _on_stats(self, sample):
         unit = str(sample.key_expr).split("/")[-1]
-        with self._lock:
-            self._d["stats"][unit] = json.loads(sample.payload.to_bytes())
+        m = self._json(sample)
+        if isinstance(m, dict):
+            with self._lock:
+                self._d["stats"][unit] = m
 
     def _on_event(self, sample):
-        with self._lock:
-            self._events.append(json.loads(sample.payload.to_bytes()))
-            self._n_events += 1
+        m = self._json(sample)
+        if isinstance(m, dict):
+            with self._lock:
+                self._events.append(m)
+                self._n_events += 1
 
     # ---------------------------------------------------------- for the server
     def snapshot(self):

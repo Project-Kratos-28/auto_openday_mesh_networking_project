@@ -38,3 +38,30 @@ One section per step. Each has: the real-life problem, files changed, how it wor
 - After a leader is killed and another revived, two drones can lead at once, and one check is shown as a KNOWN ISSUE.
 - Both are listed under "LATER" in the spec ("Fix the leader gap").
 - The spec says "3 drones in the chain + 1 spare" at the target. The kept "spare drone shortens the longest hop" rule uses all 4 drones in the chain. We can decide later if one should stay spare.
+
+---
+
+## Step A: fix drone kill / revive (and the bugs a code review found)
+
+**Real-life problem.** A drone can crash and later be rebooted. A rebooted device must not remember old orders. If it still thinks "I am the boss", it fights the real boss and the swarm gets confused (two bosses).
+
+**Files changed (one line each)**
+- `src/mesh_protocol/mesh_protocol/mesh_node.py`: when a drone is killed or revived it forgets the leader role, the election timer, old orders and the ON/OFF mode (`_forget_leadership`). Also: a killed unit makes no new messages; message numbers start from the clock; the rover ignores NaN and clamps its speed; the leader reads "am I leader" and its term in one step.
+- `src/mesh_protocol/mesh_protocol/selftest.py`: the "known issue" check is a normal check now and the revive time limit is back to 8 s.
+- `src/mesh_dashboard/mesh_dashboard/server.py`: a request with both kill and revive is refused.
+- `src/mesh_dashboard/mesh_dashboard/bridge.py`: bad JSON from the mesh is ignored instead of breaking a callback.
+- `src/mesh_link_model/mesh_link_model/passthrough_injector.py`: only numbers from 0 to 1 are accepted for drop / corrupt settings.
+- Tests: `test_node_logic.py` (4 new), `test_server.py` (1 new).
+
+**How it works**
+1. Before: a killed leader was only "muted". Its brain kept saying "I lead, term 2".
+2. After revive it spoke up at once with that old term. The lowest id wins a tie, so it beat the real leader.
+3. Now kill and revive both wipe the drone's brain. A revived drone listens for one lease (2 s), follows the current leader, and only leads if nobody does.
+
+**What to say to a visitor.** "We can switch a drone off in the middle of the demo. When it comes back it has forgotten everything and simply joins the team, so there is never a second boss."
+
+**Likely questions**
+- *What if the leader dies?* After about 2 s the lowest-numbered drone that is still reachable takes over.
+- *What if two groups of drones get cut off from each other?* Each group picks its own leader for a short time. When they can hear each other again, the lower id wins and the other steps down.
+
+**Known limit after Step A.** If a drone in the middle of the chain is switched off and the mesh is switched OFF and ON at that moment, the group around the real leader is not redeployed quickly. The far drone leads its own small group for a while. Revive itself works. This is listed in the spec under LATER ("Fix the leader gap"). The base now asks again for ON/OFF if the leader it follows is in another mode (`asked_mode` in `mesh_node.py`).

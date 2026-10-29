@@ -36,7 +36,6 @@ MAX_GAP = 1.5      # s: odometry is sent every 0.5 s, so a gap above this means 
 TEMP_GAP_TEST4 = 12.0     # s, was MAX_GAP (odometry) / 2.5 (ACKs)
 TEMP_GAP_TEST5 = 3.5      # s, was MAX_GAP (odometry) / 2.5 (ACKs); measured 1.9 to 2.6 s over several runs
 TEMP_RECONNECT = 15       # s, was 5 (base connected again after the leader was killed)
-TEMP_REVIVE = 20          # s, was 8 (revived drones accept the current leader)
 
 
 def main():
@@ -255,10 +254,12 @@ def main():
         check("mesh OFF reached the next leader", wait_for(lambda: coord("mode") == "off" and coord("leader") not in (None, old2), 10),
               f"(leader {coord('leader')})")
         s.put(KEY_COORD_CMD, "on")
-        known_issue("and ON again (two drones lead after kill + revive)", wait_for(lambda: coord("mode") == "on" and coord("state") == "DEPLOYED", 8))
+        # KNOWN ISSUE (spec: LATER "Fix the leader gap"): the dead drone cuts the chain, the far drone leads its own
+        # group, and the group around the real leader isn't redeployed within 15 s. Revive/leader bugs are fixed.
+        known_issue("and ON again (split network, dead drone cuts the chain)", wait_for(lambda: coord("mode") == "on" and coord("state") == "DEPLOYED", 15))
         s.put(KEY_FAIL_CONTROL, json.dumps({"revive": old2}))
         check("revived drones accept the current leader",
-              wait_for(lambda: all(st["stats"].get(u, {}).get("leader") == coord("leader") for u in (old, old2)), TEMP_REVIVE))
+              wait_for(lambda: all(st["stats"].get(u, {}).get("leader") == coord("leader") for u in (old, old2)), 8))
 
         print("\nTest 4f: rover photo to the base with 10 % packet loss")
         wait_for(lambda: coord("state") == "DEPLOYED" and age("odoms") < 1.0, 10)

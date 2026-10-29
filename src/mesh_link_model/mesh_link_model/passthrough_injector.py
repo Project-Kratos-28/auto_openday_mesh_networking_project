@@ -64,7 +64,12 @@ def main():
         try:
             m = json.loads(sample.payload.to_bytes())
             with lock:
-                cfg.update({k: m[k] for k in cfg if k in m})
+                good = {k: m[k] for k in ("drop_probability", "corrupt_probability")
+                        if isinstance(m.get(k), (int, float)) and not isinstance(m.get(k), bool) and 0 <= m[k] <= 1}
+                bf = m.get("bit_flips")
+                if isinstance(bf, list) and len(bf) == 2 and all(isinstance(i, int) and i >= 1 for i in bf) and bf[0] <= bf[1]:
+                    good["bit_flips"] = bf
+                cfg.update(good)                         # only numbers from 0 to 1; anything else is ignored
             print(f"[injector] settings now {cfg}", flush=True)
         except Exception as e:
             print(f"[injector] bad control message: {e}", flush=True)

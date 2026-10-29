@@ -25,8 +25,8 @@ MAX_BODY = 64 * 1024   # bytes
 
 def check_failure(cfg):
     """Validated failure settings, or None if anything is wrong."""
-    if not isinstance(cfg, dict) or not cfg:
-        return None
+    if not isinstance(cfg, dict) or not cfg or ("kill" in cfg and "revive" in cfg):
+        return None                                 # (one of kill / revive per request)
     for k, v in cfg.items():
         if k in ("drop_probability", "corrupt_probability"):
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1:
@@ -94,11 +94,11 @@ def make_server(bridge, host="127.0.0.1", port=8080):
                 body = json.loads(self.rfile.read(n) or b"{}")
             except (ValueError, RecursionError):
                 return self._reply(400, b'{"error": "bad json"}')
-            if self.path == "/api/mesh" and isinstance(body, dict) and isinstance(body.get("on"), bool):
+            if self.path.split("?")[0] == "/api/mesh" and isinstance(body, dict) and isinstance(body.get("on"), bool):
                 bridge.set_mesh(body["on"])
-            elif self.path == "/api/failure" and check_failure(body) is not None:
+            elif self.path.split("?")[0] == "/api/failure" and check_failure(body) is not None:
                 bridge.set_failure(body)
-            elif self.path == "/api/photo":
+            elif self.path.split("?")[0] == "/api/photo":
                 bridge.take_photo()
             else:
                 return self._reply(400, b'{"error": "bad request"}')

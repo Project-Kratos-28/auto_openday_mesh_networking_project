@@ -207,3 +207,54 @@ def test_status_with_bad_pos_is_ignored():
     p = make_packet("drone_1", "*", 1, "STATUS", {"pos": "here", "neighbours": 3})
     n.handle(decode(encode(p))[0], time.time())
     assert "drone_1" not in n.statuses
+
+
+class _Sample:
+    def __init__(self, m):
+        self.payload = type("P", (), {"to_bytes": lambda s: json.dumps(m).encode()})()
+
+
+def test_revived_leader_forgets_old_role_and_mode():
+    n, _ = node("drone_1")
+    n.election.is_leader, n.election.term, n.election.leader = True, 3, "drone_1"
+    n.coord.set_mode("on")
+    n.on_failure(_Sample({"kill": "drone_1"}))
+    assert n.killed and not n.election.is_leader and n.election.leader is None
+    n.coord.set_mode("on")                              # (changed while it was dead: nothing reaches it)
+    n.on_failure(_Sample({"revive": "drone_1"}))
+    assert not n.killed and not n.election.is_leader and n.election.term == 0
+    assert n.coord.mode == "off"                        # back to the start mode, not the old ON
+    assert n.election.tick(time.time()) is False        # must wait a full lease before leading again
+
+
+def test_killed_node_makes_no_new_bundles():
+    n, _ = node("rover")
+    n.killed = True
+    assert n.originate("base", "TELEMETRY", {}) is None
+    assert len(n.store) == 0
+
+
+def test_restarted_unit_does_not_reuse_old_sequence_numbers():
+    n, _ = node("rover")
+    pkt = n.originate("base", "TELEMETRY", {})
+    assert pkt["seq"] > 10**9                           # starts from the clock, not from 1
+
+
+def test_rover_ignores_nan_and_clamps_speed():
+    n, _ = node("rover")
+    driven = []
+    n.drive = lambda lin, ang: driven.append((lin, ang))
+    for lin, ang in ((float("nan"), 0.0), (99.0, -99.0), ("x", 1)):
+        cmd = make_packet("base", "rover", 1, "COMMAND", {"linear": lin, "angular": ang}, next_hop="rover")
+        n.deliver(decode(encode(cmd))[0], time.time())
+    assert len(driven) == 3 and all(abs(l) <= 2.0 and abs(a) <= 3.0 for l, a in driven)
+
+
+def test_base_asks_again_when_the_leader_it_follows_is_in_another_mode():
+    n, _ = node("base")
+    n.on_mesh_request(type("S", (), {"payload": type("P", (), {"to_string": lambda s: "on"})()})())
+    assert n.want_mode == "on"
+    n._apply_leader({"mode": "on", "routes": {}, "targets": {}}, time.time())
+    assert n.want_mode is None                          # a leader shows ON: stop asking
+    n._apply_leader({"mode": "off", "routes": {}, "targets": {}}, time.time())
+    assert n.want_mode == "on"                          # another leader (after a split) is OFF: ask again

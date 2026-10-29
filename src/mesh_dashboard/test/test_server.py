@@ -146,3 +146,9 @@ def test_huge_body_refused(server):
 def test_deep_json_400(server):
     url, _ = server
     assert post(url + "/api/mesh", b"[" * 5000 + b"]" * 5000) == 400
+
+
+def test_kill_and_revive_in_one_request_is_refused():
+    from mesh_dashboard.server import check_failure
+    assert check_failure({"kill": "drone_1"}) is not None
+    assert check_failure({"kill": "drone_1", "revive": "drone_2"}) is None
