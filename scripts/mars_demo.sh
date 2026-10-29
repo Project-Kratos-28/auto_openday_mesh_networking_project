@@ -6,6 +6,8 @@
 #   ./scripts/mars_demo.sh start --detach         # leave it running in the background
 #   ./scripts/mars_demo.sh stop                   # stop everything this script started
 #   ./scripts/mars_demo.sh status                 # what is running, plus the live mesh state
+#   ./scripts/mars_demo.sh deps                   # install the extra packages this branch needs
+#   ./scripts/mars_demo.sh deps --tunnel          # ...and fetch cloudflared up front
 #
 # Options for start:
 #   --mesh on|off        mesh mode at launch            (default: off = demo starts with direct links)
@@ -47,7 +49,7 @@ c_warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 c_bad()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 say()    { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 # ---------------------------------------------------------------- helpers
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -232,6 +234,100 @@ EOF
     c_ok "$url"
 }
 
+# ---------------------------------------------------------------- dependencies
+# The extra packages this branch needs live next to this script, so `deps` on a fresh machine is
+# one command and nothing here has to guess at versions.
+REQ_FILE=$ROOT/scripts/requirements.txt
+APT_FILE=$ROOT/scripts/apt-packages.txt
+
+pip_install_reqs() {
+    # Ubuntu 24.04 marks the system python as externally managed; --user alone is refused.
+    local flags=(--user)
+    python3 -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages' \
+        && flags+=(--break-system-packages)
+    python3 -m pip install "${flags[@]}" -r "$REQ_FILE"
+}
+
+zenoh_version() {
+    python3 -c "import importlib.metadata as m; print(m.version('eclipse-zenoh'))" 2>/dev/null
+}
+
+# The abandoned `zenoh` package on PyPI installs a module called `zenoh` too, with the old 0.x API
+# (sample.payload is bytes, there is no .to_bytes()). That fails on the first packet, so say it here.
+warn_legacy_zenoh() {
+    local legacy
+    legacy=$(python3 -c "import importlib.metadata as m; print(m.version('zenoh'))" 2>/dev/null)
+    [ -n "$legacy" ] || return 0
+    c_warn "the abandoned 'zenoh' $legacy package is installed as well and shadows eclipse-zenoh"
+    c_warn "fix: python3 -m pip uninstall -y zenoh"
+}
+
+dep_row() {                     # dep_row LABEL CMD...
+    local label=$1 v; shift
+    if v=$("$@" 2>/dev/null | head -1) && [ -n "$v" ]; then
+        printf '  %-14s %s\n' "$label" "$v" >&2
+    else
+        printf '  %-14s %s\n' "$label" "MISSING" >&2
+    fi
+}
+
+cmd_deps() {
+    local pkgs=()
+    say "workspace $ROOT"
+    [ -f "$REQ_FILE" ] || { c_bad "missing $REQ_FILE"; return 1; }
+
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+        c_bad "pip is missing — sudo apt install python3-pip"; return 1
+    fi
+    say "python packages from scripts/requirements.txt"
+    pip_install_reqs || { c_bad "pip install failed (see above)"; return 1; }
+    warn_legacy_zenoh
+
+    if [ -f "$APT_FILE" ]; then
+        mapfile -t pkgs < <(grep -vE '^[[:space:]]*(#|$)' "$APT_FILE")
+    fi
+    if [ ${#pkgs[@]} -gt 0 ]; then
+        if have apt-get && sudo -n true 2>/dev/null; then
+            say "system packages: ${pkgs[*]}"
+            sudo -n apt-get install -y "${pkgs[@]}" >/dev/null 2>&1 \
+                && c_ok "system packages installed" \
+                || c_warn "apt install failed — not fatal, the script fetches qrencode itself"
+        else
+            c_warn "no passwordless sudo — skipping ${pkgs[*]}"
+            c_warn "  optional: the QR window downloads qrencode without root"
+        fi
+    fi
+
+    if [ "$TUNNEL" = 1 ]; then
+        say "cloudflared (needed for --tunnel)"
+        ensure_cloudflared >/dev/null && c_ok "cloudflared ready" || c_warn "cloudflared unavailable"
+    fi
+    ensure_qrencode >/dev/null || c_warn "qrencode unavailable — the QR window will print the link"
+
+    echo
+    echo "installed:" >&2
+    dep_row zenoh python3 -c 'import importlib.metadata as m; print(m.version("eclipse-zenoh"))'
+    dep_row numpy python3 -c 'import numpy; print(numpy.__version__)'
+    dep_row "gz bindings" python3 -c 'import gz.transport13; print("ok")'
+    dep_row gazebo gz sim --versions
+    [ ${#QRENCODE[@]} -gt 0 ] && dep_row qrencode "${QRENCODE[@]}" --version
+    [ -x "$CF_DIR/bin/cloudflared" ] && dep_row cloudflared "$CF_DIR/bin/cloudflared" --version
+    dep_row pytest python3 -m pytest --version
+    dep_row colcon bash -c 'command -v colcon'
+    echo
+
+    # A 0.x zenoh imports fine but breaks on the first message, so check the version, not just the import.
+    local zver major
+    zver=$(zenoh_version)
+    if [ -z "$zver" ]; then
+        c_bad "python3 cannot import eclipse-zenoh — pip install --user --break-system-packages eclipse-zenoh"
+        return 1
+    fi
+    major=${zver%%.*}
+    [ "$major" -lt 1 ] 2>/dev/null && { c_bad "zenoh $zver is too old (need 1.10.x)"; return 1; }
+    c_ok "zenoh $zver ready — ./scripts/mars_demo.sh start --tunnel"
+}
+
 # ---------------------------------------------------------------- commands
 cmd_start() {
     mkdir -p "$LOG_DIR" "$RUN_DIR"
@@ -255,6 +351,7 @@ cmd_start() {
 
     # Preflight
     have curl || { c_bad "curl is missing"; return 1; }
+    have colcon || { c_bad "colcon is missing — sudo apt install ros-dev-tools"; return 1; }
     python3 -c 'import zenoh' 2>/dev/null || { c_bad "python zenoh missing: pip install --user --break-system-packages eclipse-zenoh"; return 1; }
     if [ -z "$FAKE" ]; then
         have gz || { c_bad "gz not found — install Gazebo Harmonic (see README step 4)"; return 1; }
@@ -407,6 +504,8 @@ case $cmd in
     start)  cmd_start ;;
     stop)   cmd_stop ;;
     status) cmd_status ;;
+    deps)   cmd_deps ;;
     restart) cmd_stop; cmd_start ;;
+    -h|--help|help) usage; exit 0 ;;
     *) usage; exit 1 ;;
 esac
