@@ -8,7 +8,7 @@
 #   ./scripts/mars_demo.sh status                 # what is running, plus the live mesh state
 #
 # Options for start:
-#   --mesh on|off        mesh mode at launch            (default: on)
+#   --mesh on|off        mesh mode at launch            (default: off = demo starts with direct links)
 #   --passcode TEXT      dashboard controls passcode    (default: kratos123, "" disables)
 #   --host ADDR          dashboard bind address         (default: 0.0.0.0 = LAN, 127.0.0.1 = local only)
 #   --port N             dashboard port                 (default: 8080)
@@ -31,7 +31,7 @@ LOG_DIR=$RUN_DIR/logs
 CF_DIR=$RUN_DIR/cloudflared
 ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
 
-MESH=on
+MESH=off
 PASSCODE=kratos123
 HOST=0.0.0.0
 PORT=8080
@@ -91,6 +91,7 @@ role_ok() {                     # role_ok NAME PID
         dashboard) [[ $cmd == *dashboard* ]] ;;
         tunnel)    [[ $cmd == *cloudflared* ]] ;;
         qr)        [[ $cmd == *show_qr.sh* ]] ;;
+        mission)   [[ $cmd == *mesh_protocol*mission* ]] ;;
         *)         return 1 ;;
     esac
 }
@@ -268,7 +269,6 @@ cmd_start() {
     say "starting sim + mesh (mesh=$MESH)"
     local launch_args=(ros2 launch mesh_protocol mesh.launch.py "mesh:=$MESH")
     [ -n "$FAKE" ] && launch_args+=(fake:=true) || launch_args+=(sim:=true)
-    [ "$MISSION" = 1 ] && launch_args+=(mission:=true)
     spawn launch "$LOG_DIR/launch.log" "${launch_args[@]}"
 
     if ! wait_http "http://127.0.0.1:$PORT/" 25; then
@@ -303,6 +303,18 @@ cmd_start() {
         else
             c_warn "no reachable URL to encode (NAT'd VM) — run with --tunnel"
         fi
+        # The helper writes qr.pid as its first line: wait for it so the window is really up
+        # before the rover moves (10 s cap, then carry on).
+        for _ in $(seq 1 20); do [ -s "$RUN_DIR/qr.pid" ] && break; sleep 0.5; done
+    fi
+
+    # The mission starts only now: the QR window is up, so whoever scans it can watch from the
+    # first metre. It is our own process group, not the launch file's, so stop/status see it.
+    if [ "$MISSION" = 1 ]; then
+        say "starting mission (base -> target)"
+        local margs=(ros2 run mesh_protocol mission)
+        [ -n "$FAKE" ] && margs+=(--fake)
+        spawn mission "$LOG_DIR/mission.log" "${margs[@]}"
     fi
 
     [ -n "$PASSCODE" ] && c_warn "controls passcode: $PASSCODE" || c_warn "controls are UNLOCKED (empty passcode)"
@@ -328,7 +340,7 @@ cmd_start() {
 
 cmd_stop() {
     local name
-    for name in launch dashboard tunnel qr; do stop_one "$name"; done
+    for name in launch dashboard tunnel qr mission; do stop_one "$name"; done
     rm -f "$RUN_DIR"/*.pid
     if port_busy 7447 || port_busy "$PORT"; then
         c_warn "some ports are still busy: $(ss -tln 2>/dev/null | grep -E ":(7447|$PORT) " | awk '{print $4}' | tr '\n' ' ')"
@@ -339,7 +351,7 @@ cmd_stop() {
 
 cmd_status() {
     local name p
-    for name in launch dashboard tunnel qr; do
+    for name in launch dashboard tunnel qr mission; do
         p=$(pids "$name")
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then printf '%-10s running (pid %s)\n' "$name" "$p"
         else printf '%-10s not running\n' "$name"; fi
