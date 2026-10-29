@@ -6,7 +6,7 @@ GET  /                 the page (static/index.html, offline: no external URLs)
 GET  /events           Server-Sent Events: "snapshot" 4x a second, "log" for each mesh event
 POST /api/mesh         {"on": true|false}             mesh ON/OFF
 POST /api/failure      {"drop_probability": 0.1, "corrupt_probability": 0.2, "kill": "drone_2", "revive": ...}
-POST /api/photo        {}                             rover takes a photo, sends it to base B
+POST /api/photo        {}                             rover takes a photo, sends it to the base
 Listens on 127.0.0.1 only by default: the controls have no login.
 """
 import argparse

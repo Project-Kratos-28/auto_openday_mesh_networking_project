@@ -72,16 +72,15 @@ def test_coordinator_off_parks_drones():
         assert abs(out["targets"][d][0] - START_XY[d][0]) < 0.01
     # mesh OFF: drones relay for nobody (a drone is only a next hop when it is the destination)
     assert all(nh == dst for r in out["routes"].values() for dst, nh in r.items() if nh in DRONES)
-    assert "rover" not in out["routes"]["base_a"]             # rover in the crater, out of sight: no route
+    assert "rover" not in out["routes"]["base"]             # rover in the crater, out of sight: no route
 
 
 
-def test_coordinator_on_chains_both_bases():
+def test_coordinator_on_chains_the_base():
     c = Coordinator(TERRAIN, "on")
     out = c.update(statuses(0.0), 0.0)
     ch = out["chains"]
-    assert ch["base_a"] and ch["base_b"]
-    assert sorted(ch["base_a"] + ch["base_b"]) == DRONES
+    assert sorted(ch["base"]) == DRONES
     assert out["state"] == "DEPLOYED"
 
 
@@ -100,7 +99,7 @@ def test_coordinator_skips_silent_drone():
     st = statuses(0.0)
     del st["drone_3"]                                   # no STATUS from it: dead or out of reach
     out = c.update(st, 0.0)
-    used = out["chains"]["base_a"] + out["chains"]["base_b"]
+    used = out["chains"]["base"]
     assert "drone_3" not in used and len(used) == 3
     assert all("drone_3" not in r.values() for r in out["routes"].values())
 
@@ -115,8 +114,8 @@ def test_routes_follow_drone_targets_at_once():
         for d in DRONES:
             st[d]["pos"] = list(out["targets"][d])
     r = out["routes"]
-    hop, seen = "base_a", []
-    while hop != "rover" and len(seen) < 6:             # walk base_a -> rover
+    hop, seen = "base", []
+    while hop != "rover" and len(seen) < 6:             # walk base -> rover
         seen.append(hop)
         hop = r[hop]["rover"]
     assert hop == "rover" and all(h in DRONES for h in seen[1:])
@@ -136,7 +135,7 @@ def test_drone_in_flight_routed_from_where_it_is():
     st = statuses(0.0)
     out = c.update(st, 0.0)                                   # all four told to fly, none moved yet
     r = out["routes"]
-    assert "rover" not in r["base_a"] and "rover" not in r["base_b"]
+    assert "rover" not in r["base"]
 
 
 def test_assign_spots_to_nearest_drones():
@@ -149,7 +148,7 @@ def test_assign_spots_to_nearest_drones():
 
 
 class FlatTerrain:
-    """No hills: only the 32 m radio range decides links."""
+    """No hills: only the 20 m radio range decides links."""
     def ground(self, x, y):
         return 0.0
 
@@ -158,21 +157,21 @@ class FlatTerrain:
 
 
 def test_moves_a_spare_drone_before_one_the_chain_needs():
-    """While both chains work, drones move one at a time, and a drone in flight is treated as gone:
-    first move one whose absence keeps both chains up."""
+    """While the chain works, drones move one at a time, and a drone in flight is treated as gone:
+    first move one whose absence keeps the chain up."""
     c = Coordinator(FlatTerrain(), "on")
-    pos = {"rover": (0.0, 0.0, 0.0), "base_a": (-40.0, 0.0, 0.0), "base_b": (40.0, 0.0, 0.0),
-           "drone_1": (-20.0, 0.0, 3.0), "drone_2": (20.0, 0.0, 3.0),
-           "drone_3": (-50.0, 0.0, 3.0), "drone_4": (50.0, 0.0, 3.0)}
+    pos = {"rover": (0.0, 0.0, 0.0), "base": (-40.0, 0.0, 0.0),
+           "drone_1": (-26.0, 0.0, 3.0), "drone_2": (-13.0, 0.0, 3.0),     # the chain: base - d1 - d2 - rover
+           "drone_3": (-30.0, 5.0, 3.0), "drone_4": (-45.0, 5.0, 3.0)}    # spares
     c.targets = {d: pos[d] for d in DRONES}
-    c.goal = dict(c.targets, drone_1=(-19.0, 0.0, 3.0), drone_3=(-22.0, 0.0, 3.0))
-    c.order, c.drones = ["drone_1", "drone_3"], list(DRONES)
+    c.goal = dict(c.targets, drone_2=(-12.0, 0.0, 3.0), drone_3=(-31.0, 5.0, 3.0))
+    c.order, c.drones = ["drone_2", "drone_3"], list(DRONES)
     c._move(pos, 0.0)
-    assert list(c.moving) == ["drone_3"]                     # drone_1 carries base A's link: not first
+    assert list(c.moving) == ["drone_3"]                     # drone_2 carries the link: not first
 
 
-def test_no_reshuffle_while_both_chains_hold():
-    """Flying costs a relay gap, so the leader only re-plans when a chain is about to break,
+def test_no_reshuffle_while_the_chain_holds():
+    """Flying costs a relay gap, so the leader only re-plans when the chain is about to break,
     not every time the rover has moved a few metres."""
     c = Coordinator(TERRAIN, "on")
     st = statuses(0.0)

@@ -45,23 +45,23 @@ def test_new_photo_resets():
     assert r.add(chunks(b"abc", 5)[0])["photo_id"] == 5
 
 
-def test_rover_sends_photo_on_request_and_base_b_rebuilds_it():
+def test_rover_sends_photo_on_request_and_base_rebuilds_it():
     import time
     from mesh_common import decode, encode, make_packet
     from mesh_protocol.photo import photo_bytes
     from test_node_logic import node
 
     rover, _ = node("rover")
-    req = make_packet("base_b", "rover", 1, "PHOTO_REQ", {}, next_hop="rover")
+    req = make_packet("base", "rover", 1, "PHOTO_REQ", {}, next_hop="rover")
     rover.handle(decode(encode(req))[0], time.time())
-    held = [p for p, _ in rover.store.due(time.time(), lambda d: "base_b", 1000) if p["type"] == "PHOTO_CHUNK"]
+    held = [p for p, _ in rover.store.due(time.time(), lambda d: "base", 1000) if p["type"] == "PHOTO_CHUNK"]
     assert held and all(p["priority"] == 2 for p in held)
 
-    base_b, s = node("base_b")
+    base, s = node("base")
     for p in held:
-        q = dict(p, next_hop="base_b")
-        base_b.handle(decode(encode(q))[0], time.time())
-    final = s.published("mesh/base_b/photo")[-1]
+        q = dict(p, next_hop="base")
+        base.handle(decode(encode(q))[0], time.time())
+    final = s.published("mesh/base/photo")[-1]
     assert final["done"] and final["ok"] and base64.b64decode(final["image_b64"]) == photo_bytes()
 
 

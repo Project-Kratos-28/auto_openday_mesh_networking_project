@@ -6,8 +6,8 @@ import threading
 import time
 from collections import deque
 
-from mesh_common import (KEY_COORD_STATE, KEY_COORD_CMD, KEY_ACKS_A, KEY_ODOM_B, KEY_MISSION, KEY_LINKS,
-                         KEY_POSITIONS, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO_B, KEY_PHOTO_CMD,
+from mesh_common import (KEY_COORD_STATE, KEY_COORD_CMD, KEY_ACKS, KEY_ODOM, KEY_MISSION, KEY_LINKS,
+                         KEY_POSITIONS, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, TARGET_XY,
                          open_session)
 
 TYPES_SHOWN = ("COMMAND", "TELEMETRY", "PHOTO_CHUNK")
@@ -50,12 +50,12 @@ class Bridge:
         self._s = session or open_session()
         S = self._s
         self._subs = [S.declare_subscriber(KEY_COORD_STATE, self._set("coord")),
-                      S.declare_subscriber(KEY_ACKS_A, self._set("ack")),
-                      S.declare_subscriber(KEY_ODOM_B, self._on_odom),
+                      S.declare_subscriber(KEY_ACKS, self._set("ack")),
+                      S.declare_subscriber(KEY_ODOM, self._on_odom),
                       S.declare_subscriber(KEY_MISSION, self._set("mission")),
                       S.declare_subscriber(KEY_LINKS, self._on_links),
                       S.declare_subscriber(KEY_POSITIONS, self._on_pos),
-                      S.declare_subscriber(KEY_PHOTO_B, self._set("photo")),
+                      S.declare_subscriber(KEY_PHOTO, self._set("photo")),
                       S.declare_subscriber(KEY_EVENTS, self._on_event),
                       S.declare_subscriber("mesh/stats/*", self._on_stats)]
 
@@ -112,7 +112,7 @@ class Bridge:
             "last_ack": d["ack"], "ack_age": now - d["ack_t"] if d["ack"] else None,
             "last_odom": d["odom"], "odom_age": now - d["odom_t"] if d["odom"] else None,
             "odom": odom, "delivery": delivery(stats), "mission": d["mission"], "photo": d["photo"],
-            "failure": d["failure"], "terrain": self._terrain,
+            "failure": d["failure"], "terrain": self._terrain, "target": list(TARGET_XY),
         }
 
     def events(self, after):

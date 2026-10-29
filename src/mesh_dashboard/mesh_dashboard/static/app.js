@@ -2,9 +2,9 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const NS = "http://www.w3.org/2000/svg";          // SVG namespace name (never fetched)
-const UNITS = ["rover", "drone_1", "drone_2", "drone_3", "drone_4", "base_a", "base_b"];
+const UNITS = ["rover", "drone_1", "drone_2", "drone_3", "drone_4", "base"];
 const X0 = -56, X1 = 56, Z0 = -1, Z1 = 22;           // map window (metres)
-const ANT = { rover: 1.3, base_a: 10.5, base_b: 10.5 };
+const ANT = { rover: 1.3, base: 10.5 };
 let snap = null, lastMsg = 0, firstTime = null;
 
 function svg(tag, attrs, parent) {
@@ -26,6 +26,14 @@ function drawMap(s) {
   if (s.terrain && s.terrain.length) {
     const pts = s.terrain.map(([x, z]) => `${mx(x)},${mz(z)}`).join(" ");
     svg("polygon", { points: `0,300 ${pts} 1000,300`, fill: "var(--ground)", stroke: "var(--ground-edge)" }, m);
+  }
+  if (s.target && s.terrain && s.terrain.length) {          // the science target: a red flag on the ground
+    const tx = mx(s.target[0]);
+    const ground = s.terrain.reduce((a, p) => (Math.abs(p[0] - s.target[0]) < Math.abs(a[0] - s.target[0]) ? p : a));
+    const tz = mz(ground[1]);
+    svg("line", { x1: tx, y1: tz, x2: tx, y2: tz - 30, stroke: "#fff", "stroke-width": 2 }, m);
+    svg("polygon", { points: `${tx},${tz - 30} ${tx + 18},${tz - 24} ${tx},${tz - 18}`, fill: "#ff3030" }, m);
+    svg("text", { x: tx, y: tz - 36, fill: "#ff6060", "font-size": 12, "text-anchor": "middle" }, m).textContent = "TARGET";
   }
   const pos = s.positions || {};
   const ant = (u) => pos[u] && [mx(pos[u][0]), mz(pos[u][2] + (ANT[u] || 0))];

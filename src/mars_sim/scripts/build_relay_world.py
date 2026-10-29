@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Write worlds/mars_crater.sdf (+ the mars_crater model files) for the 2-base relay demo.
+"""Write worlds/mars_crater.sdf (+ the mars_crater model files) for the relay demo (one base, one science target).
 
 Layout (crater centre = origin, all on the x axis), small demo scale:
-    drones parked behind base A . base A (-40) . rover start (-32) . crater rim (+-18) . base B (+40)
+    drones parked behind the base . base (-40) . rover start (-32) . crater rim (+-18) . target marker (+30)
 Every z is placed on the real ground using generate_crater.height().
-If you move a base or the rover here, change the same numbers in mesh_common (START_POSES).
+If you move the base, the rover or the target here, change the same numbers in mesh_common (START_XY, TARGET_XY).
 Run from src/mars_sim:  python3 scripts/build_relay_world.py
 """
 import os
@@ -15,9 +15,9 @@ sys.path.insert(0, HERE)
 from generate_crater import height  # noqa: E402
 
 PKG = os.path.join(HERE, "..")
-BASE_A = (-40.0, 0.0)       # base pads are 10 x 10 m
-BASE_B = (40.0, 0.0)
-ROVER = (-32.0, 0.0)        # just in front of base A's pad, facing +x (towards the crater)
+BASE = (-40.0, 0.0)         # base pad is 10 x 10 m
+TARGET = (30.0, 0.0)        # science target marker, past the far crater rim
+ROVER = (-32.0, 0.0)        # just in front of the base's pad, facing +x (towards the crater)
 DRONE_PARK = {"drone_1": (-48.0, 3.0), "drone_2": (-48.0, -3.0),
               "drone_3": (-51.0, 3.0), "drone_4": (-51.0, -3.0)}
 DRONE_HOVER = 3.0           # parked drones hover this high above the ground
@@ -32,6 +32,27 @@ def include(uri, name, x, y, zz, static=False):
     st = "\n      <static>true</static>" if static else ""
     return (f"    <include>\n      <uri>model://{uri}</uri>\n      <name>{name}</name>\n"
             f"      <pose>{x} {y} {zz} 0 0 0</pose>{st}\n    </include>\n")
+
+
+def target_marker(x, y, zz):
+    """A static red flag (pole + cloth, visual only, no collision) that marks the science target."""
+    return f"""    <model name="target_marker">
+      <static>true</static>
+      <pose>{x} {y} {zz} 0 0 0</pose>
+      <link name="flag">
+        <visual name="pole">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry><cylinder><radius>0.04</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.9 0.9 0.9 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+        <visual name="cloth">
+          <pose>0.3 0 1.3 0 0 0</pose>
+          <geometry><box><size>0.6 0.02 0.4</size></box></geometry>
+          <material><ambient>1 0.1 0.1 1</ambient><diffuse>1 0.1 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+"""
 
 
 def world_sdf():
@@ -74,8 +95,8 @@ def world_sdf():
     parts.append(include("primary_rover", "primary_rover", *ROVER, z(*ROVER, ROVER_DROP)))
     for name, (x, y) in DRONE_PARK.items():
         parts.append(include("relay_drone", name, x, y, z(x, y, DRONE_HOVER), static=True))
-    parts.append(include("base_station", "base_station", *BASE_A, z(*BASE_A), static=True))
-    parts.append(include("base_station", "base_station_2", *BASE_B, z(*BASE_B), static=True))
+    parts.append(include("base_station", "base_station", *BASE, z(*BASE), static=True))
+    parts.append(target_marker(*TARGET, z(*TARGET)))
     parts.append("  </world>\n</sdf>\n")
     return "".join(parts)
 
@@ -108,7 +129,7 @@ CRATER_CONFIG = '''<?xml version="1.0"?>
   <name>mars_crater</name>
   <version>2.0</version>
   <sdf version="1.9">model.sdf</sdf>
-  <description>Crater terrain for the 2-base relay demo (generated)</description>
+  <description>Crater terrain for the relay demo (generated)</description>
 </model>
 '''
 
@@ -125,10 +146,10 @@ def main():
     with open(os.path.join(m, "model.config"), "w") as f:
         f.write(CRATER_CONFIG)
     print(f"wrote {os.path.normpath(w)}")
-    print(f"  base A  base_station   at ({BASE_A[0]}, {BASE_A[1]}, {z(*BASE_A)})")
-    print(f"  base B  base_station_2 at ({BASE_B[0]}, {BASE_B[1]}, {z(*BASE_B)})")
+    print(f"  base    base_station   at ({BASE[0]}, {BASE[1]}, {z(*BASE)})")
+    print(f"  target  target_marker  at ({TARGET[0]}, {TARGET[1]}, {z(*TARGET)})")
     print(f"  rover   primary_rover  at ({ROVER[0]}, {ROVER[1]}, {z(*ROVER, ROVER_DROP)})")
-    print("  drones parked next to base A")
+    print("  drones parked next to the base")
 
 
 if __name__ == "__main__":
