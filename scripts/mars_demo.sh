@@ -248,7 +248,9 @@ cmd_start() {
     if [ "$BUILD" = 1 ] || [ ! -f "$ROOT/install/setup.bash" ] || [ -n "$(find "$ROOT/src" -newer "$ROOT/install/setup.bash" -name '*.py' -print -quit 2>/dev/null)" ]; then
         say "colcon build --symlink-install"
         ( cd "$ROOT" && colcon build --symlink-install ) || { c_bad "build failed"; return 1; }
+        set +u                # install/setup.bash trips over unbound vars under `set -u`
         . "$ROOT/install/setup.bash"
+        set -u
     fi
 
     # Preflight
