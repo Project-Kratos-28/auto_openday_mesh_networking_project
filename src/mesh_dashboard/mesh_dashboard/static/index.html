@@ -61,12 +61,25 @@
     <ol id="log"></ol>
   </section>
 
+  <section class="panel feed">
+    <h2>Rover live camera (2 fps)</h2>
+    <img id="feedImg" alt="Live rover camera" hidden>
+    <div class="sub" id="feedText">no frames yet</div>
+  </section>
+
   <section class="panel photo">
     <h2>Rover photo → base</h2>
     <button id="photoBtn">TAKE PHOTO</button>
     <div class="progress"><div id="photoBar"></div></div>
     <div class="sub" id="photoText">no photo yet</div>
     <img id="photoImg" alt="Photo received at the base" hidden>
+  </section>
+
+  <section class="panel qr">
+    <h2>Send a photo from your phone</h2>
+    <img id="qrImg" src="/qr.svg" alt="QR code" onerror="this.hidden = true">
+    <div class="sub">Scan, take a picture: it goes phone → rover → drones → base.</div>
+    <div class="sub" id="qrText"></div>
   </section>
 
   <section class="panel fail">

@@ -146,14 +146,25 @@ function drawPanels(s) {
     held.appendChild(row);
   }
 
-  const ph = s.photo;
+  const fd = s.feed;
+  if (fd) {
+    const age = s.now - fd.t;                    // a frozen picture is shown as such, never as live
+    $("feedImg").src = "data:image/jpeg;base64," + fd.jpg_b64;
+    $("feedImg").hidden = false;
+    $("feedImg").style.opacity = age < 2 ? 1 : 0.35;
+    $("feedText").textContent = age < 2 ? "live" : `link down, frozen ${age.toFixed(0)} s ago`;
+  }
+  lastPhotoId = s.photo ? s.photo.photo_id : null;
+  const ph = s.photo && s.photo.photo_id !== ignoreId ? s.photo : null;   // after TAKE PHOTO the old picture is not shown
   if (ph && ph.total) {
     $("photoBar").style.width = (100 * ph.received) / ph.total + "%";
-    $("photoText").textContent = ph.done ? `${ph.total} chunks · sha256 ${ph.ok ? "OK ✓" : "MISMATCH ✕"}` : `${ph.received} / ${ph.total} chunks`;
+    $("photoText").textContent = ph.done ? `Photo received ✓ ${ph.total} chunks · sha256 ${ph.ok ? "OK ✓" : "MISMATCH ✕"} · ${$("photoImg").dataset.at || ""}`
+                                         : `Photo taken, travelling over the mesh: ${ph.received} / ${ph.total} chunks`;
     $("photoText").className = "sub " + (ph.done ? (ph.ok ? "ok" : "bad") : "");
     if (ph.done && ph.image_b64 && $("photoImg").dataset.id !== String(ph.photo_id)) {
-      $("photoImg").src = "data:image/png;base64," + ph.image_b64;
+      $("photoImg").src = `data:image/${ph.image_b64.startsWith("/9j") ? "jpeg" : "png"};base64,` + ph.image_b64;
       $("photoImg").dataset.id = String(ph.photo_id);
+      $("photoImg").dataset.at = "taken " + new Date().toLocaleTimeString([], { hour12: false });
       $("photoImg").hidden = false;
     }
   }
@@ -171,9 +182,23 @@ function syncSlider(id, v) {
   $(id + "Out").textContent = Math.round(v * 100) + " %";
 }
 
+let lastPhotoId = null, ignoreId = null;   // see the TAKE PHOTO button
+
 function addLog(e) {
   const log = $("log");
   const top = log.firstElementChild;
+  if (e.event === "packet") {                      // camera feed / photo packets: one line per kind, with a counter
+    const key = "pkt-" + e.type, hops = e.route.map(short).join(" → ");
+    const n = top && top.dataset.kind === key ? Number(top.dataset.n) + 1 : 1;
+    const li = n > 1 ? top : document.createElement("li");
+    if (n === 1) { li.innerHTML = "<time></time><b></b> <span></span>"; li.dataset.kind = key; log.prepend(li); }
+    li.dataset.n = n;
+    li.children[0].textContent = new Date(e.time * 1000).toLocaleTimeString([], { hour12: false });
+    li.children[1].textContent = "BASE";
+    li.children[2].textContent = `${e.type === "FEED" ? "camera frame" : "photo chunk"} #${e.seq} via ${hops} · ${e.delay_ms} ms` + (n > 1 ? `  (×${n})` : "");
+    while (log.children.length > 200) log.lastChild.remove();
+    return;
+  }
   if (e.event === "route_change" && top && top.dataset.kind === "route") {   // merge the burst into one line
     const units = new Set(top.dataset.units.split(",").concat(e.unit));
     top.dataset.units = [...units].join(",");
@@ -204,7 +229,15 @@ async function post(path, body) {
   } catch (err) { console.warn(err); }
 }
 $("meshBtn").onclick = () => post("/api/mesh", { on: $("meshBtn").getAttribute("aria-pressed") !== "true" });
-$("photoBtn").onclick = () => post("/api/photo", {});
+$("photoBtn").onclick = () => {
+  ignoreId = lastPhotoId;                          // wait for a NEW picture
+  $("photoImg").hidden = true;
+  $("photoBar").style.width = "0";
+  $("photoText").className = "sub";
+  $("photoText").textContent = "Photo requested, waiting for the rover...";
+  post("/api/photo", {});
+};
+fetch("/phone_url").then((r) => r.text()).then((u) => { $("qrText").textContent = u; }).catch(() => {});
 for (const id of ["drop", "corrupt"]) {
   $(id).oninput = () => ($(id + "Out").textContent = $(id).value + " %");
   $(id).onchange = () => post("/api/failure", { [id + "_probability"]: Number($(id).value) / 100 });

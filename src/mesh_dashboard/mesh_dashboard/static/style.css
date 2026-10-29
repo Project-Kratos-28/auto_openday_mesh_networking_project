@@ -22,12 +22,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .danger { border-color: #6b2a2a; } .danger:hover { background: #3a1616; }
 .grid { display: grid; gap: 12px; padding: 12px 16px;
   grid-template-columns: 2fr 1fr 1fr; grid-template-areas:
-  "map map links" "odom odom held" "log photo fail"; }
+  "map map links" "odom odom held" "feed feed photo" "log qr fail"; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
 .panel h2 { margin: 0 0 8px; font-size: 11px; font-weight: normal; letter-spacing: .1em;
   text-transform: uppercase; color: var(--dim); }
 .map { grid-area: map; } .links { grid-area: links; } .held { grid-area: held; }
-.odom { grid-area: odom; } .log { grid-area: log; } .photo { grid-area: photo; } .fail { grid-area: fail; }
+.odom { grid-area: odom; } .log { grid-area: log; } .photo { grid-area: photo; } .fail { grid-area: fail; } .feed { grid-area: feed; } .qr { grid-area: qr; }
 svg { width: 100%; display: block; }
 #map { height: 300px; } #odom { height: 160px; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px; color: var(--dim); font-size: 12px; }
@@ -51,6 +51,8 @@ svg { width: 100%; display: block; }
 .log time { color: var(--dim); margin-right: 8px; }
 .progress { height: 10px; background: #0a111c; border-radius: 5px; margin: 10px 0 4px; overflow: hidden; }
 #photoBar { height: 100%; width: 0; background: var(--p2); transition: width .3s; }
+#feedImg { width: 100%; border-radius: 6px; border: 1px solid var(--line); background: #000; }
+.qr img { width: 100%; max-width: 220px; display: block; background: #fff; border-radius: 6px; margin-bottom: 6px; }
 #photoImg { width: 100%; border-radius: 6px; border: 1px solid var(--line); }
 .fail label { display: block; margin-bottom: 10px; color: var(--dim); }
 .fail output { color: var(--text); float: right; }
@@ -58,5 +60,5 @@ svg { width: 100%; display: block; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 select { font: inherit; color: var(--text); background: #16233a; border: 1px solid #2c4366; border-radius: 6px; padding: 8px; }
 @media (max-width: 900px) {
-  .grid { grid-template-columns: 1fr; grid-template-areas: "map" "links" "odom" "held" "log" "photo" "fail"; }
+  .grid { grid-template-columns: 1fr; grid-template-areas: "map" "links" "odom" "held" "feed" "photo" "log" "qr" "fail"; }
 }

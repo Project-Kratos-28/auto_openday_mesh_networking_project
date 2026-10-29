@@ -19,6 +19,7 @@ DTN rules (docs/V3_CHANGES.md):
   crc32 + "can't parse" check -> broken packets are dropped, the node never crashes.
 """
 import argparse
+import base64
 import json
 import math
 import traceback
@@ -27,13 +28,13 @@ import time
 from collections import OrderedDict
 
 from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED, SEND_RATE, LATE_AFTER,
-                         LEASE, DRONE_SPEED, DRONE_ACCEL, KEY_POSITIONS, KEY_CMD, KEY_ACKS, KEY_ODOM, KEY_COORD_STATE, KEY_COORD_CMD,
-                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, key_tx, key_rx, key_stats,
+                         KEY_FEED, FEED_PERIOD, LEASE, DRONE_SPEED, DRONE_ACCEL, KEY_POSITIONS, KEY_CMD, KEY_ACKS, KEY_ODOM, KEY_COORD_STATE, KEY_COORD_CMD,
+                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, KEY_PHONE_PHOTO, key_tx, key_rx, key_stats,
                          make_packet, encode, decode, expired, bundle_id, open_session)
 from mesh_link_model.sim_io import teleport, fast_available
 from mesh_protocol.leader import Coordinator, Election
 from mesh_protocol.mover import Mover
-from mesh_protocol.photo import Reassembler, chunks, photo_bytes
+from mesh_protocol.photo import Camera, Reassembler, chunks, photo_bytes
 from mesh_protocol.store import BundleStore
 
 NEIGHBOUR_TIMEOUT = 1.5        # seconds without HELLO -> neighbour gone
@@ -76,6 +77,9 @@ class MeshNode:
                           dropped_full=0)
         self.stats["by_type"] = {t: {"sent": 0, "delivered": 0, "expired": 0} for t in ROUTED}
         self.truth = None                               # rover: true pose from the link model
+        self.camera = None                              # rover: front camera (Gazebo only)
+        self.last_photo_id = 0                          # rover: id of the last phone photo
+        self.last_feed = 0.0                            # rover: time of the last live frame
         self.odom = None                                # rover: wheel odometry from Gazebo
         self.last_drive = 0.0                           # rover: time of last drive command
         self.moving = False
@@ -115,9 +119,12 @@ class MeshNode:
             self.pub_coord = s.declare_publisher(KEY_COORD_STATE)
             self.subs.append(s.declare_subscriber(KEY_CMD, self.on_cmd_request))
             self.subs.append(s.declare_subscriber(KEY_COORD_CMD, self.on_mesh_request))
+        if unit == "rover":
+            self.subs.append(s.declare_subscriber(KEY_PHONE_PHOTO, self.on_phone_photo))
         if unit == RECEIVER:
             self.pub_odom = s.declare_publisher(KEY_ODOM)
             self.pub_photo = s.declare_publisher(KEY_PHOTO)
+            self.pub_feed = s.declare_publisher(KEY_FEED)
             self.photo, self.photo_logged = Reassembler(), None
             self.subs.append(s.declare_subscriber(KEY_PHOTO_CMD, lambda _: self.originate("rover", "PHOTO_REQ", {})))
         role = {"rover": "rover", "base": "base"}.get(unit, "relay drone")
@@ -129,6 +136,14 @@ class MeshNode:
 
     def event(self, name, **kw):
         self.pub_events.put(json.dumps({"time": time.time(), "unit": self.unit, "event": name, **kw}))
+
+    def on_phone_photo(self, sample):
+        """A picture from a phone: the rover sends it to the base like its own photo."""
+        parts = chunks(sample.payload.to_bytes(), max(int(time.time()), self.last_photo_id + 1))
+        self.last_photo_id = parts[0]["photo_id"]
+        self.log(f"phone photo: {len(parts)} chunks to {RECEIVER} (bulk priority)")
+        for c in parts:
+            self.originate(RECEIVER, "PHOTO_CHUNK", c)
 
     def _setup_gazebo(self):
         """Rover: publisher for /rover/cmd_vel and subscriber for /rover/odom."""
@@ -150,6 +165,7 @@ class MeshNode:
                 self.odom = {"x": round(msg.pose.position.x, 2), "y": round(msg.pose.position.y, 2),
                              "yaw": round(yaw, 3), "v": round(msg.twist.linear.x, 2)}
             self._gz_node.subscribe(Odometry, "/rover/odom", on_odom)
+            self.camera = Camera()
         except Exception as e:
             self.log(f"(no Gazebo python bindings, commands will only be printed: {e})")
 
@@ -220,6 +236,11 @@ class MeshNode:
         """Drop expired bundles, then (re)send what is due, within the send budget."""
         if self.killed:
             return []
+        if self.unit == "rover" and self.camera and now - self.last_feed >= FEED_PERIOD:
+            self.last_feed = now
+            jpg = self.camera.encode("JPEG", quality=55)
+            if jpg:                                   # live frame to the base, dropped if it gets stale
+                self.originate(RECEIVER, "FEED", {"t": now, "jpg_b64": base64.b64encode(jpg).decode()})
         out = []
         with self.lock:
             for p in self.store.expire(now):
@@ -301,6 +322,8 @@ class MeshNode:
         route = pkt["path"] + [self.unit]
         delay_ms = round((now - pkt["sent_time"]) * 1000, 1)
         p = pkt["payload"]
+        if self.unit == RECEIVER and pkt["type"] in ("FEED", "PHOTO_CHUNK"):      # shown in the dashboard log
+            self.event("packet", type=pkt["type"], seq=pkt["seq"], route=route, delay_ms=delay_ms)
         if self.unit == "rover" and pkt["type"] == "COMMAND":
             if "linear" in p or "angular" in p:
                 try:
@@ -317,13 +340,16 @@ class MeshNode:
                                                "cmd_age_ms": delay_ms})
         elif self.unit == "rover" and pkt["type"] == "PHOTO_REQ":
             try:
-                parts = chunks(photo_bytes(), pkt["seq"])
+                shot = self.camera.encode() if self.camera else None   # real camera, else the stock picture
+                parts = chunks(shot or photo_bytes(), pkt["seq"])
             except OSError as e:
                 self.log(f"no photo to send: {e}")
                 return
             self.log(f"taking a photo: {len(parts)} chunks to {pkt['src']} (bulk priority)")
             for c in parts:
                 self.originate(pkt["src"], "PHOTO_CHUNK", c)
+        elif self.unit == RECEIVER and pkt["type"] == "FEED":
+            self.pub_feed.put(json.dumps(p))
         elif self.unit == RECEIVER and pkt["type"] == "PHOTO_CHUNK":
             prog = self.photo.add(p)
             self.pub_photo.put(json.dumps(prog))

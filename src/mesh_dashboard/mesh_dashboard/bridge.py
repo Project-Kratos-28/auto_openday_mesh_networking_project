@@ -1,13 +1,14 @@
 """Bridge: the ONLY place the dashboard talks to the mesh (Zenoh). The web server calls
 snapshot() / events() to draw, and set_mesh / set_failure / take_photo for the controls.
 """
+import io
 import json
 import threading
 import time
 from collections import deque
 
 from mesh_common import (KEY_COORD_STATE, KEY_COORD_CMD, KEY_ACKS, KEY_ODOM, KEY_MISSION, KEY_LINKS,
-                         KEY_POSITIONS, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, TARGET_XY,
+                         KEY_POSITIONS, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, KEY_PHONE_PHOTO, KEY_FEED, TARGET_XY,
                          open_session)
 
 TYPES_SHOWN = ("COMMAND", "TELEMETRY", "PHOTO_CHUNK")
@@ -42,7 +43,7 @@ class Bridge:
         self._lock = threading.Lock()
         self._started = time.time()
         self._d = {"coord": None, "ack": None, "ack_t": 0.0, "odom": None, "odom_t": 0.0,
-                   "mission": None, "links": [], "positions": {}, "stats": {}, "photo": None,
+                   "mission": None, "links": [], "positions": {}, "stats": {}, "photo": None, "feed": None,
                    "failure": {"drop_probability": 0.0, "corrupt_probability": 0.0}}
         self._odom = deque(maxlen=ODOM_KEEP)
         self._events, self._n_events = deque(maxlen=EVENTS_KEEP), 0
@@ -56,6 +57,7 @@ class Bridge:
                       S.declare_subscriber(KEY_LINKS, self._on_links),
                       S.declare_subscriber(KEY_POSITIONS, self._on_pos),
                       S.declare_subscriber(KEY_PHOTO, self._set("photo")),
+                      S.declare_subscriber(KEY_FEED, self._set("feed")),
                       S.declare_subscriber(KEY_EVENTS, self._on_event),
                       S.declare_subscriber("mesh/stats/*", self._on_stats)]
 
@@ -128,7 +130,7 @@ class Bridge:
             "coord": d["coord"], "positions": d["positions"], "links": d["links"], "stats": stats,
             "last_ack": d["ack"], "ack_age": now - d["ack_t"] if d["ack"] else None,
             "last_odom": d["odom"], "odom_age": now - d["odom_t"] if d["odom"] else None,
-            "odom": odom, "delivery": delivery(stats), "mission": d["mission"], "photo": d["photo"],
+            "odom": odom, "delivery": delivery(stats), "mission": d["mission"], "photo": d["photo"], "feed": d["feed"],
             "failure": d["failure"], "terrain": self._terrain, "target": list(TARGET_XY),
         }
 
@@ -146,6 +148,18 @@ class Bridge:
         with self._lock:
             self._d["failure"].update({k: v for k, v in cfg.items() if k.endswith("probability")})
         self._s.put(KEY_FAIL_CONTROL, json.dumps(cfg))
+
+    def phone_photo(self, data):
+        """A phone picture (any size) -> small JPEG -> the rover. ValueError if it is not an image."""
+        from PIL import Image, ImageOps, UnidentifiedImageError
+        try:
+            img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+        except (UnidentifiedImageError, OSError) as e:
+            raise ValueError("not an image") from e
+        img.thumbnail((480, 480))                   # ~30 KB: about 30 chunks over the mesh
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=70)
+        self._s.put(KEY_PHONE_PHOTO, out.getvalue())
 
     def take_photo(self):
         self._s.put(KEY_PHOTO_CMD, json.dumps({"time": time.time()}))

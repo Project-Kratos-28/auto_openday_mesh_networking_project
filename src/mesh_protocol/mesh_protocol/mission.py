@@ -21,7 +21,7 @@ import threading
 import time
 
 from mesh_common import (TARGET_XY, TARGET_REACH, START_XY, ROVER_SPEED, KEY_POSITIONS, KEY_ACKS, KEY_CMD,
-                         KEY_MISSION, open_session)
+                         KEY_MISSION, KEY_PHOTO_CMD, open_session)
 from mesh_link_model.terrain import Terrain
 from mesh_link_model.sim_io import teleport
 
@@ -90,6 +90,8 @@ def main():
                 pub_status.put(json.dumps({"time": now, "state": state, "x": x, "y": y,
                                            "progress": 100.0, "assists": assists}))
                 log(f"ARRIVED at the target, x = {x:.1f} m ({assists} assists). Rover stopped.")
+                s.put(KEY_PHOTO_CMD, "arrived")        # ask the rover for a photo of the target
+                log("photo requested (it travels back over the mesh when the links allow)")
                 break
             heading = math.atan2(-y, LOOKAHEAD)                    # aim back to y = 0
             err = wrap(heading - yaw)
