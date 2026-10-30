@@ -4,7 +4,10 @@ together and checks the whole file's sha256. Pure logic (test/test_photo.py).
 """
 import base64
 import hashlib
+import io
 import os
+import threading
+import time
 
 
 def photo_bytes():
@@ -20,6 +23,33 @@ def photo_bytes():
             with open(p, "rb") as f:
                 return f.read()
     raise FileNotFoundError("photo.png not found")
+
+
+class Camera:
+    """The rover camera: keeps the newest frame Gazebo publishes on /rover/camera."""
+
+    def __init__(self, topic="/rover/camera"):
+        self.frame, self.stamp, self.lock = None, 0.0, threading.Lock()
+        from gz.transport13 import Node
+        from gz.msgs10.image_pb2 import Image
+        self._node = Node()
+        self._node.subscribe(Image, topic, self._on_image)
+
+    def _on_image(self, msg):
+        with self.lock:
+            self.frame, self.stamp = (msg.width, msg.height, bytes(msg.data)), time.time()
+
+    def encode(self, fmt="PNG", size=None, quality=90):
+        """The newest frame as image bytes, or None if there is none from the last 2 s."""
+        with self.lock:
+            if self.frame is None or time.time() - self.stamp > 2.0:
+                return None
+            w, h, raw = self.frame
+        from PIL import Image as PILImage
+        img = PILImage.frombytes("RGB", (w, h), raw)
+        out = io.BytesIO()
+        (img.resize(size) if size else img).save(out, fmt, quality=quality)
+        return out.getvalue()
 
 
 def chunks(data, photo_id, size=1024):

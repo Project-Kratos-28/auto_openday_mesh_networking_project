@@ -19,6 +19,7 @@ DTN rules (docs/V3_CHANGES.md):
   crc32 + "can't parse" check -> broken packets are dropped, the node never crashes.
 """
 import argparse
+import base64
 import json
 import math
 import traceback
@@ -27,13 +28,13 @@ import time
 from collections import OrderedDict
 
 from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED, SEND_RATE, LATE_AFTER,
-                         LEASE, DRONE_SPEED, DRONE_ACCEL, KEY_POSITIONS, KEY_CMD, KEY_ACKS, KEY_ODOM, KEY_COORD_STATE, KEY_COORD_CMD,
-                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, key_tx, key_rx, key_stats,
+                         KEY_FEED, FEED_PERIOD, LEASE, DRONE_SPEED, DRONE_ACCEL, KEY_POSITIONS, KEY_CMD, KEY_ACKS, KEY_ODOM, KEY_COORD_STATE, KEY_COORD_CMD,
+                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, KEY_PHONE_PHOTO, key_tx, key_rx, key_stats,
                          make_packet, encode, decode, expired, bundle_id, open_session)
 from mesh_link_model.sim_io import teleport, fast_available
-from mesh_protocol.leader import Election
+from mesh_protocol.leader import Coordinator, Election
 from mesh_protocol.mover import Mover
-from mesh_protocol.photo import Reassembler, chunks, photo_bytes
+from mesh_protocol.photo import Camera, Reassembler, chunks, photo_bytes
 from mesh_protocol.store import BundleStore
 
 NEIGHBOUR_TIMEOUT = 1.5        # seconds without HELLO -> neighbour gone
@@ -64,6 +65,7 @@ class MeshNode:
         self.telemetry_period = telemetry_period
         self.lock = threading.Lock()
         self.seq = {}                                   # bundle type -> last sequence number
+        self.seq_start = int(time.time())               # a restarted unit must not reuse old numbers (they'd look like duplicates)
         self.seen = OrderedDict()                       # bundle id -> time first seen
         self.neighbours = {}                            # unit -> time of last HELLO
         self.store = BundleStore()
@@ -75,6 +77,9 @@ class MeshNode:
                           dropped_full=0)
         self.stats["by_type"] = {t: {"sent": 0, "delivered": 0, "expired": 0} for t in ROUTED}
         self.truth = None                               # rover: true pose from the link model
+        self.camera = None                              # rover: front camera (Gazebo only)
+        self.last_photo_id = 0                          # rover: id of the last phone photo
+        self.last_feed = 0.0                            # rover: time of the last live frame
         self.odom = None                                # rover: wheel odometry from Gazebo
         self.last_drive = 0.0                           # rover: time of last drive command
         self.moving = False
@@ -84,11 +89,12 @@ class MeshNode:
         self.last_leader = None                         # newest LEADER payload we follow (+ "time")
         self.election = Election(unit, time.time())     # drones elect; everyone uses it to pick a leader
         self.want_mode = None                           # base: mesh mode asked for, until a LEADER shows it
+        self.asked_mode = None                          # base: the mode the user asked for last (kept: a later leader may not have it)
         self.move_asked = (None, 0.0)                   # drones: (target, time) last handed to the mover
         if self.is_drone:
             from mesh_link_model.terrain import Terrain
-            from mesh_protocol.leader import Coordinator
             terrain = Terrain.load()
+            self.mesh_start = mesh
             self.coord = Coordinator(terrain, mesh, log=self.log)
             # glide to targets (DRONE_SPEED m/s, 20 steps a second), at least 2 m above the ground,
             # speeding up / slowing down gently (DRONE_ACCEL) and facing the way it flies
@@ -113,9 +119,12 @@ class MeshNode:
             self.pub_coord = s.declare_publisher(KEY_COORD_STATE)
             self.subs.append(s.declare_subscriber(KEY_CMD, self.on_cmd_request))
             self.subs.append(s.declare_subscriber(KEY_COORD_CMD, self.on_mesh_request))
+        if unit == "rover":
+            self.subs.append(s.declare_subscriber(KEY_PHONE_PHOTO, self.on_phone_photo))
         if unit == RECEIVER:
             self.pub_odom = s.declare_publisher(KEY_ODOM)
             self.pub_photo = s.declare_publisher(KEY_PHOTO)
+            self.pub_feed = s.declare_publisher(KEY_FEED)
             self.photo, self.photo_logged = Reassembler(), None
             self.subs.append(s.declare_subscriber(KEY_PHOTO_CMD, lambda _: self.originate("rover", "PHOTO_REQ", {})))
         role = {"rover": "rover", "base": "base"}.get(unit, "relay drone")
@@ -127,6 +136,14 @@ class MeshNode:
 
     def event(self, name, **kw):
         self.pub_events.put(json.dumps({"time": time.time(), "unit": self.unit, "event": name, **kw}))
+
+    def on_phone_photo(self, sample):
+        """A picture from a phone: the rover sends it to the base like its own photo."""
+        parts = chunks(sample.payload.to_bytes(), max(int(time.time()), self.last_photo_id + 1))
+        self.last_photo_id = parts[0]["photo_id"]
+        self.log(f"phone photo: {len(parts)} chunks to {RECEIVER} (bulk priority)")
+        for c in parts:
+            self.originate(RECEIVER, "PHOTO_CHUNK", c)
 
     def _setup_gazebo(self):
         """Rover: publisher for /rover/cmd_vel and subscriber for /rover/odom."""
@@ -148,6 +165,7 @@ class MeshNode:
                 self.odom = {"x": round(msg.pose.position.x, 2), "y": round(msg.pose.position.y, 2),
                              "yaw": round(yaw, 3), "v": round(msg.twist.linear.x, 2)}
             self._gz_node.subscribe(Odometry, "/rover/odom", on_odom)
+            self.camera = Camera()
         except Exception as e:
             self.log(f"(no Gazebo python bindings, commands will only be printed: {e})")
 
@@ -199,8 +217,10 @@ class MeshNode:
     # -------------------------------------------------------------- sending
     def originate(self, dst, ptype, payload, ttl=None):
         """Create a brand-new bundle from this unit. Routed ones go into the store first."""
+        if self.killed:                                # silent: nothing new is made (it would pile up in the store)
+            return None
         with self.lock:
-            self.seq[ptype] = self.seq.get(ptype, 0) + 1
+            self.seq[ptype] = self.seq.get(ptype, self.seq_start) + 1
             pkt = make_packet(self.unit, dst, self.seq[ptype], ptype, payload, ttl or self.ttl)
             self.stats["sent"] += 1
             if ptype in ROUTED:
@@ -216,6 +236,11 @@ class MeshNode:
         """Drop expired bundles, then (re)send what is due, within the send budget."""
         if self.killed:
             return []
+        if self.unit == "rover" and self.camera and now - self.last_feed >= FEED_PERIOD:
+            self.last_feed = now
+            jpg = self.camera.encode("JPEG", quality=55)
+            if jpg:                                   # live frame to the base, dropped if it gets stale
+                self.originate(RECEIVER, "FEED", {"t": now, "jpg_b64": base64.b64encode(jpg).decode()})
         out = []
         with self.lock:
             for p in self.store.expire(now):
@@ -297,9 +322,17 @@ class MeshNode:
         route = pkt["path"] + [self.unit]
         delay_ms = round((now - pkt["sent_time"]) * 1000, 1)
         p = pkt["payload"]
+        if self.unit == RECEIVER and pkt["type"] in ("FEED", "PHOTO_CHUNK"):      # shown in the dashboard log
+            self.event("packet", type=pkt["type"], seq=pkt["seq"], route=route, delay_ms=delay_ms)
         if self.unit == "rover" and pkt["type"] == "COMMAND":
             if "linear" in p or "angular" in p:
-                lin, ang = float(p.get("linear", 0.0)), float(p.get("angular", 0.0))
+                try:
+                    lin, ang = float(p.get("linear", 0.0)), float(p.get("angular", 0.0))
+                except (TypeError, ValueError):
+                    lin = ang = 0.0
+                if not (math.isfinite(lin) and math.isfinite(ang)):
+                    lin = ang = 0.0                    # NaN / infinity: stop
+                lin, ang = max(-2.0, min(2.0, lin)), max(-3.0, min(3.0, ang))
                 self.drive(lin, ang)
                 self.last_drive, self.moving = now, (lin != 0.0 or ang != 0.0)
             self.originate(pkt["src"], "ACK", {"ack_seq": pkt["seq"], "cmd_sent_time": pkt["sent_time"],
@@ -307,13 +340,16 @@ class MeshNode:
                                                "cmd_age_ms": delay_ms})
         elif self.unit == "rover" and pkt["type"] == "PHOTO_REQ":
             try:
-                parts = chunks(photo_bytes(), pkt["seq"])
+                shot = self.camera.encode() if self.camera else None   # real camera, else the stock picture
+                parts = chunks(shot or photo_bytes(), pkt["seq"])
             except OSError as e:
                 self.log(f"no photo to send: {e}")
                 return
             self.log(f"taking a photo: {len(parts)} chunks to {pkt['src']} (bulk priority)")
             for c in parts:
                 self.originate(pkt["src"], "PHOTO_CHUNK", c)
+        elif self.unit == RECEIVER and pkt["type"] == "FEED":
+            self.pub_feed.put(json.dumps(p))
         elif self.unit == RECEIVER and pkt["type"] == "PHOTO_CHUNK":
             prog = self.photo.add(p)
             self.pub_photo.put(json.dumps(prog))
@@ -407,7 +443,9 @@ class MeshNode:
                 self.mover.request(target)
         if self.unit == COMMANDER:
             self.pub_coord.put(json.dumps(dict(p, time=sent, relay=p.get("state") == "DEPLOYED")))
-            if self.want_mode == p.get("mode"):
+            if self.asked_mode and p.get("mode") != self.asked_mode:
+                self.want_mode = self.asked_mode         # the leader we follow is still in another mode: ask again
+            elif self.want_mode == p.get("mode"):
                 self.want_mode = None
 
     def _lead(self, now):
@@ -418,19 +456,22 @@ class MeshNode:
         if elected:
             self.log(f"I am the LEADER now (term {self.election.term})")
             self.event("election", term=self.election.term)
-            if self.last_leader:
+            if self.last_leader and now - self.last_leader.get("time", 0) < 2 * LEASE:
                 self.coord.adopt(self.last_leader)
             self.next_lead = 0.0
-        if not self.election.is_leader or now < self.next_lead:
+        if now < self.next_lead:
             return
-        self.next_lead = now + LEADER_PERIOD
         with self.lock:
+            if not self.election.is_leader:
+                return
+            term = self.election.term                  # same moment as the check: a step-down can't slip in between
+            self.next_lead = now + LEADER_PERIOD
             fresh = {u: st for u, st in self.statuses.items()
                      if u == "rover" or now - st["time"] < STATUS_FRESH}
             fresh[self.unit] = {"pos": self.pos, "neighbours": sorted(self._alive(now)), "time": now}
         if not fresh[self.unit]["pos"]:
             return
-        msg = dict(self.coord.update(fresh, now), leader=self.unit, term=self.election.term, lease=LEASE)
+        msg = dict(self.coord.update(fresh, now), leader=self.unit, term=term, lease=LEASE)
         self.originate(BROADCAST, "LEADER", msg)
         self._apply_leader(msg, now)                   # the leader follows its own orders too
 
@@ -441,16 +482,30 @@ class MeshNode:
             return
         if m.get("kill") == self.unit and not self.killed:
             self.killed = True
+            self._forget_leadership()
             self.log("KILLED (failure injection): silent until revived")
             self.event("killed")
         elif m.get("revive") == self.unit and self.killed:
+            self._forget_leadership()                  # a revived drone knows nothing: it follows the current leader
             self.killed = False
             self.log("revived")
             self.event("revived")
 
+    def _forget_leadership(self):
+        """Kill / revive: drop the old leader role, election timers, leader orders and mesh mode, so a
+        revived leader can't take over again with an old term (two leaders) or an old ON / OFF mode."""
+        with self.lock:
+            self.election = Election(self.unit, time.time())
+            self.last_leader, self.routes, self.statuses = None, {}, {}
+            if self.is_drone:
+                self.coord = Coordinator(self.coord.terrain, self.mesh_start, log=self.log)
+
     def on_positions(self, sample):
-        m = json.loads(sample.payload.to_bytes())
-        self.pos = m["positions"].get(self.unit, self.pos)
+        try:
+            m = json.loads(sample.payload.to_bytes())
+            self.pos = m["positions"].get(self.unit, self.pos)
+        except (ValueError, KeyError, AttributeError):
+            return
         if self.unit == "rover" and "rover" in m["positions"]:
             self.truth = {"pos": m["positions"]["rover"], "yaw": m.get("yaw", {}).get("rover")}
 
@@ -458,7 +513,7 @@ class MeshNode:
         """base: mesh ON/OFF from the dashboard or mesh_ctl -> MESH_CMD, repeated until a LEADER shows it."""
         mode = sample.payload.to_string().strip().strip('"').lower()
         if mode in ("on", "off"):
-            self.want_mode = mode
+            self.want_mode = self.asked_mode = mode
             self.next_mesh_cmd = 0.0
         else:
             self.log(f"ignored mesh command '{mode}' (v3 knows on / off; auto was removed)")
