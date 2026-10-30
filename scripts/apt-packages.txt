@@ -1,0 +1,11 @@
+# Optional system packages for the demo extras. mars_demo.sh already downloads both without sudo
+# (apt-get download + dpkg-deb -x into $MARS_DEMO_DIR), so these lines are only for people who
+# prefer them installed system-wide:
+#
+#   ./scripts/mars_demo.sh deps            # installs them if sudo is passwordless, else explains
+#   sudo apt install -y $(grep -vE '^[[:space:]]*(#|$)' scripts/apt-packages.txt)
+#
+# cloudflared is not listed: Cloudflare has no package in Ubuntu's archive. The script fetches
+# Cloudflare's own .deb and unpacks it, which needs no root.
+qrencode
+libqrencode4

@@ -1,0 +1,16 @@
+# Extra Python packages for the Ronak branch. Everything else (ROS 2 Jazzy, Gazebo Harmonic,
+# python3-gz-transport13/msgs10, python3-numpy, python3-pip, curl) is already covered by the
+# install steps documented for main.
+#
+# Install:  ./scripts/mars_demo.sh deps
+#       or  python3 -m pip install --user --break-system-packages -r scripts/requirements.txt
+
+# The mesh is tested on 1.10.1. Patch releases of 1.10 are accepted so a machine that already has
+# 1.10.2 is not downgraded; 1.11+ is blocked because the msg API has not been checked against it.
+# Caution: the abandoned `zenoh` package on PyPI also provides a module named `zenoh`, but with the
+# old 0.x API (sample.payload is bytes, no .to_bytes()). Only eclipse-zenoh works here.
+eclipse-zenoh>=1.10,<1.11
+
+# Tests only (`pytest src/*/test`), not needed to run the demo. 7.4 is what Ubuntu ships, 8.x is
+# what pip installs, so accept both instead of forcing an upgrade.
+pytest>=7,<9

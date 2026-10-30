@@ -1,12 +1,11 @@
-"""Relay planner: where should the drones go so the rover reaches BOTH bases?
+"""Relay planner: where should the drones go so the rover reaches the base?
 
 Idea (simple, no fancy maths):
   * For one base, try 0, 1, 2 ... drones spaced evenly on the straight line rover -> base.
     Each drone hovers H metres above the highest ground near its spot. If any hop is too
     long or blocked by terrain, try higher (RELAY_HEIGHTS in mesh_common), then one more drone.
-  * Do that for base A and base B. That gives the minimum number of drones per chain.
-  * Spare drones are added to the chain with the longest hop (shorter hops = stronger
-    links), so all 4 drones always help.
+  * That gives the minimum number of drones for the chain rover -> base.
+  * Spare drones are added to the chain (shorter hops = stronger links), so all 4 drones always help.
 """
 import math
 
@@ -51,7 +50,7 @@ def min_chain(terrain, rover_ant, base_ant, max_k, radio_range=RADIO_RANGE):
     return None, None
 
 
-def plan(terrain, positions, drones, bases=("base_a", "base_b"), radio_range=RADIO_RANGE):
+def plan(terrain, positions, drones, bases=("base",), radio_range=RADIO_RANGE):
     """Return ({drone: (x, y, z)}, {base: [drones in its chain, rover side first]}) or (None, reason)."""
     r = antenna("rover", positions["rover"])
     ends = {b: antenna(b, positions[b]) for b in bases}

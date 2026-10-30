@@ -1,8 +1,8 @@
 """Small helper commands.
 
-  ros2 run mesh_protocol mesh_monitor            # live view: both bases, leader drone, links
+  ros2 run mesh_protocol mesh_monitor            # live view: the base, leader drone, links
   ros2 run mesh_protocol mesh_ctl on|off         # the mesh toggle (same as the dashboard switch)
-  ros2 run mesh_protocol send_cmd 1.0 0.0        # one drive command from base A (0 = stop)
+  ros2 run mesh_protocol send_cmd 1.0 0.0        # one drive command from the base (0 = stop)
   ros2 run mesh_protocol move_unit drone_1 0 0 12   # teleport a unit in Gazebo
   ros2 run mesh_protocol move_unit home             # drones back to their parking spot
   (add --fake to move_unit when running without Gazebo)
@@ -13,8 +13,8 @@ import sys
 import threading
 import time
 
-from mesh_common import (UNITS, DRONES, START_XY, DRONE_HOVER, KEY_LINKS, KEY_ACKS_A, KEY_ODOM_B,
-                         KEY_CMD_A, KEY_COORD_STATE, KEY_COORD_CMD, KEY_MISSION, open_session)
+from mesh_common import (UNITS, DRONES, START_XY, DRONE_HOVER, KEY_LINKS, KEY_ACKS, KEY_ODOM,
+                         KEY_CMD, KEY_COORD_STATE, KEY_COORD_CMD, KEY_MISSION, open_session)
 
 
 # ------------------------------------------------------------------ move_unit
@@ -58,8 +58,8 @@ def send_cmd():
     ap.add_argument("linear", type=float, help="forward speed m/s (0 = stop)")
     ap.add_argument("angular", type=float, nargs="?", default=0.0, help="turn rate rad/s")
     args, _ = ap.parse_known_args()
-    _put_once(KEY_CMD_A, json.dumps({"linear": args.linear, "angular": args.angular}))
-    print(f"base_a will send: linear {args.linear}, angular {args.angular} "
+    _put_once(KEY_CMD, json.dumps({"linear": args.linear, "angular": args.angular}))
+    print(f"the base will send: linear {args.linear}, angular {args.angular} "
           f"(the rover's safety watchdog stops it after 2 s without new commands)")
 
 
@@ -71,8 +71,8 @@ def mesh_ctl():
         print("auto mode was removed in v3: use mesh_ctl on / off")
         return
     _put_once(KEY_COORD_CMD, args.what)
-    print({"off": "mesh OFF: base A tells the leader drone; drones park, no relaying",
-           "on": "mesh ON: base A tells the leader drone; drones deploy and keep both bases connected"}[args.what])
+    print({"off": "mesh OFF: the base tells the leader drone; drones park, no relaying",
+           "on": "mesh ON: the base tells the leader drone; drones deploy and keep the rover connected"}[args.what])
 
 
 # ------------------------------------------------------------------ mesh_monitor
@@ -106,8 +106,8 @@ def mesh_monitor():
             st["stats"][str(x.key_expr).split("/")[-1]] = json.loads(x.payload.to_bytes())
 
     subs = [s.declare_subscriber(KEY_LINKS, on_links),                          # noqa: F841
-            s.declare_subscriber(KEY_ACKS_A, setter("ack", "acks")),
-            s.declare_subscriber(KEY_ODOM_B, on_odom),
+            s.declare_subscriber(KEY_ACKS, setter("ack", "acks")),
+            s.declare_subscriber(KEY_ODOM, on_odom),
             s.declare_subscriber(KEY_COORD_STATE, setter("coord")),
             s.declare_subscriber(KEY_MISSION, setter("mission")),
             s.declare_subscriber("mesh/stats/*", on_stats)]
@@ -123,29 +123,28 @@ def mesh_monitor():
                 col = G if co["state"] == "DEPLOYED" else Y
                 out.append(f"MESH: {col}{co['mode'].upper()}{N}  state={co['state']}  leader={co.get('leader')} "
                            f"(term {co.get('term')})   ({co['reason']})")
-                for b in ("base_a", "base_b"):
-                    if co["chains"].get(b) is not None:
-                        out.append(f"  chain {b}: rover -> {' -> '.join(co['chains'][b]) or '(direct)'} -> {b}")
+                if co["chains"].get("base") is not None:
+                    out.append(f"  chain: rover -> {' -> '.join(co['chains']['base']) or '(direct)'} -> base")
             else:
-                out.append(f"MESH: {Y}base A has heard no leader drone yet{N}")
+                out.append(f"MESH: {Y}the base has heard no leader drone yet{N}")
             m = c["mission"]
             if m:
-                out.append(f"MISSION: {m['state']}  rover x = {m['x']} m  ({m['progress']} % to base B)"
+                out.append(f"MISSION: {m['state']}  rover x = {m['x']} m  ({m['progress']} % to the target)"
                            f"  assists: {m['assists']}")
             out.append("")
             a = c["ack"]
             if a and now - a["time"] < 3:
-                out.append(f"BASE A (commander): {G}CONNECTED{N}  {c['acks']} acks  rtt {a['rtt_ms']} ms")
+                out.append(f"BASE commands: {G}CONNECTED{N}  {c['acks']} acks  rtt {a['rtt_ms']} ms")
                 out.append(f"  command went: {' -> '.join(a['cmd_route'] or [])}")
                 out.append(f"  ack came back: {' -> '.join(a['ack_route'])}   rover moving: {a['moving']}")
             else:
                 age = f"no ack for {now - a['time']:.0f} s" if a else "no ack yet"
-                out.append(f"BASE A (commander): {R}NO CONNECTION{N} to the rover ({age})")
+                out.append(f"BASE commands: {R}NO CONNECTION{N} to the rover ({age})")
             o = c["odom"]
             if o and now - o["time"] < 3:
                 p = o["payload"]
                 od, tr = p.get("odom"), p.get("truth")
-                out.append(f"BASE B (receiver):  {G}RECEIVING{N}  {c['odoms']} msgs  delay {o['delay_ms']} ms")
+                out.append(f"BASE odometry:  {G}RECEIVING{N}  {c['odoms']} msgs  delay {o['delay_ms']} ms")
                 out.append(f"  route: {' -> '.join(o['route'])}")
                 since = (co or {}).get("on_since")
                 ts = [t for t in c["odom_times"] if since and t >= since]
@@ -159,7 +158,7 @@ def mesh_monitor():
                     out.append(f"  true position:  {tr['pos']}")
             else:
                 age = f"nothing for {now - o['time']:.0f} s" if o else "nothing received yet"
-                out.append(f"BASE B (receiver):  {R}NO DATA{N} from the rover ({age})")
+                out.append(f"BASE odometry:  {R}NO DATA{N} from the rover ({age})")
             out += ["", "LINKS UP (not counting drone<->drone):"]
             up = [f"{l['a']}<->{l['b']} {l['distance']:.0f}m" for l in c["links"]
                   if l["up"] and not (l["a"].startswith("drone") and l["b"].startswith("drone"))]

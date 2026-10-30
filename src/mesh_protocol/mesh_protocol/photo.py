@@ -1,5 +1,5 @@
 """Photo transfer (like NASA's CFDP file delivery, much simplified): the rover cuts a file into
-1 KB chunks that travel as bulk-priority bundles with custody transfer; base B puts them back
+1 KB chunks that travel as bulk-priority bundles with custody transfer; the base puts them back
 together and checks the whole file's sha256. Pure logic (test/test_photo.py).
 """
 import base64

@@ -16,10 +16,12 @@ from mesh_protocol.routing import compute_routes
 
 HEARD_WINDOW = 2.0        # s: drones heard this recently take part in an election
 JITTER = 0.5              # s: random extra wait, so two drones rarely start at once
-LOOK_AHEAD = 3.0          # s: re-place drones if a chain would break within this time
+LOOK_AHEAD = 5.0          # s: re-place drones if a chain would break within this time (20 m radio: start early)
 CHECK_PERIOD = 0.5        # s between chain checks
 MOVE_SLACK = 2.0          # s on top of the flight time to wait for a drone to report it arrived
 ARRIVED = 0.5             # m
+ROVER_STALE = 1.0         # s: a rover report older than this is old news (the rover is out of reach)
+ROVER_GUESS_MAX = 4.0     # s: guess where the silent rover is by its last speed, for at most this long
 
 
 class Election:
@@ -80,9 +82,8 @@ def reachable(terrain, pos, start, goal, relays):
 
 
 def connected(terrain, pos, drones=DRONES):
-    """True if the rover can reach BOTH bases through `drones`."""
-    return (reachable(terrain, pos, "rover", "base_a", drones)
-            and reachable(terrain, pos, "rover", "base_b", drones))
+    """True if the rover can reach the base through `drones`."""
+    return reachable(terrain, pos, "rover", "base", drones)
 
 
 def assign(spots, here):
@@ -100,7 +101,7 @@ class Coordinator:
     def __init__(self, terrain, mode="off", log=lambda text: None):
         self.terrain, self.mode, self.log = terrain, mode, log
         self.park = {d: (*START_XY[d], round(terrain.ground(*START_XY[d]) + DRONE_HOVER, 2)) for d in DRONES}
-        self.bases = {b: (*START_XY[b], terrain.ground(*START_XY[b])) for b in ("base_a", "base_b")}
+        self.bases = {"base": (*START_XY["base"], terrain.ground(*START_XY["base"]))}
         self.targets, self.goal = dict(self.park), dict(self.park)
         self.order, self.moving = [], {}       # drones still to move; drone -> deadline while in flight
         self.chains, self.state, self.reason, self.on_since = {}, "STANDBY", "mesh off", None
@@ -146,7 +147,7 @@ class Coordinator:
         ch = {b: [owner[names.index(n)] for n in chain] for b, chain in ch.items()}
         self.goal, self.chains = {**self.goal, **new}, ch
         self.state, self.reason = "DEPLOYED", why
-        self.log(f"t={now:.1f} plan ({why}): base_a chain {ch.get('base_a')}, base_b chain {ch.get('base_b')}")
+        self.log(f"t={now:.1f} plan ({why}): chain to base {ch.get('base')}")
         self._queue()
 
     def _queue(self):
@@ -164,7 +165,7 @@ class Coordinator:
         self.moving[d] = now + flight_time(math.dist(start, self.goal[d])) + MOVE_SLACK
 
     def _move(self, pos, now):
-        """Hand out drone targets. While both chains work: one drone at a time, in an order that keeps
+        """Hand out drone targets. While the chain works: one drone at a time, in an order that keeps
         them working. When nothing works yet (fresh deploy) or the mesh is OFF (parking): every drone
         at once, nothing to protect. Parking one at a time would cut off the far drones before their
         turn: they would never hear their 'fly home' target."""
@@ -184,8 +185,8 @@ class Coordinator:
             for d in list(self.order):
                 self._send(d, pos, now)
             return
-        # best: a drone the chains don't need while it flies (treated as gone), and fine once there;
-        # else one whose new spot keeps both chains up; else just the next one
+        # best: a drone the chain doesn't need while it flies (treated as gone), and fine once there;
+        # else one whose new spot keeps the chain up; else just the next one
         lands_ok = [d for d in self.order if connected(self.terrain, {**cur, d: self.goal[d]}, self.drones)]
         spare = [d for d in lands_ok
                  if connected(self.terrain, cur, [x for x in self.drones if x != d])]
@@ -197,13 +198,16 @@ class Coordinator:
         pos = {u: tuple(s["pos"]) for u, s in statuses.items() if s.get("pos")}
         pos.update(self.bases)
         self.drones = [d for d in DRONES if d in statuses]
-        if "rover" in pos:                             # rover speed from successive reports
+        age = now - statuses.get("rover", {}).get("time", now)
+        if "rover" in pos and age <= ROVER_STALE:      # rover speed from successive FRESH reports
             if self.last_rover and now - self.last_rover[0] > 0.2:
                 dt = now - self.last_rover[0]
                 for i in (0, 1):
                     self.vel[i] = 0.5 * self.vel[i] + 0.5 * (pos["rover"][i] - self.last_rover[1][i]) / dt
             if self.last_rover is None or now - self.last_rover[0] > 0.2:
                 self.last_rover = (now, pos["rover"])
+        if "rover" in pos and age > ROVER_STALE:       # no report (cut off): it has driven on since
+            pos["rover"] = self._ahead(pos["rover"], min(age, ROVER_GUESS_MAX))
         if self.mode == "off" and self.state == "DEPLOYED":
             self.goal, self.chains, self.state, self.reason, self.on_since = dict(self.park), {}, "STANDBY", "mesh switched OFF", None
             self._queue()
@@ -219,12 +223,10 @@ class Coordinator:
             self.next_check = now + CHECK_PERIOD
             cur = self._where(pos)
             soon = dict(cur, rover=self._ahead(pos["rover"], LOOK_AHEAD))
-            ok_a = all(reachable(self.terrain, p, "rover", "base_a", self.drones) for p in (cur, soon))
-            ok_b = all(reachable(self.terrain, p, "rover", "base_b", self.drones) for p in (cur, soon))
-            # re-plan only when a chain is about to break: every move is a flight that can open a gap
-            if not (ok_a and ok_b):
-                self._deploy(pos, f"chain to {'base_a' if not ok_a else 'base_b'} will break soon", now,
-                             lead=LOOK_AHEAD / 2)
+            ok = all(reachable(self.terrain, p, "rover", "base", self.drones) for p in (cur, soon))
+            # re-plan only when the chain is about to break: every move is a flight that can open a gap
+            if not ok:
+                self._deploy(pos, "chain to base will break soon", now, lead=LOOK_AHEAD / 2)
         self._move(pos, now)
         return {"mode": self.mode, "state": self.state, "reason": self.reason, "chains": self.chains,
                 "targets": {d: list(p) for d, p in self.targets.items()}, "on_since": self.on_since,

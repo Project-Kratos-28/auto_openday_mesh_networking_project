@@ -1,13 +1,17 @@
-"""Mission autopilot at base A: drive the rover from base A to base B.
+"""Mission autopilot at the base: drive the rover from the base to the science target.
 
   ros2 run mesh_protocol mission                 # 1 m/s, assist on
   ros2 run mesh_protocol mission --speed 0.5 --no-assist
 
-Twice a second it sends a velocity command to base A (mesh/base_a/cmd); base A sends it
+Twice a second it sends a velocity command to the base (mesh/base/cmd); the base sends it
 over the mesh. Steering: aim at a point 4 m ahead on the line y = 0.
 (Steering uses the simulator's true rover position, like a localisation system, so the
-demo doesn't drift. The odometry the rover sends goes to base B over the mesh.)
-Stops at x = GOAL_X, next to base B.
+demo doesn't drift. The odometry the rover sends goes to the base over the mesh.)
+Stops TARGET_REACH metres before the target marker (TARGET_XY).
+
+It stays alive after arriving: clicking "Restart simulation" in Gazebo puts the rover back on the
+start line, and the mission notices the jump, clears its counters and drives the run again. So the
+demo can be repeated without restarting the demo script.
 
 Assist (backup): if the rover IS getting the commands (ACKs arrive) but hasn't moved 0.5 m
 in 6 s (stuck on a slope or a bump), it is lifted 1.5 m forward along the path.
@@ -20,14 +24,15 @@ import math
 import threading
 import time
 
-from mesh_common import (GOAL_X, START_XY, ROVER_SPEED, KEY_POSITIONS, KEY_ACKS_A, KEY_CMD_A, KEY_MISSION,
-                         open_session)
+from mesh_common import (TARGET_XY, TARGET_REACH, START_XY, ROVER_SPEED, KEY_POSITIONS, KEY_ACKS, KEY_CMD,
+                         KEY_MISSION, open_session)
 from mesh_link_model.terrain import Terrain
 from mesh_link_model.sim_io import teleport
 
 LOOKAHEAD = 4.0          # m ahead on the line y = 0 that the rover steers towards
 ASSIST_STEP = 1.5        # m the rover is lifted forward when stuck
 STUCK_MOVE = 0.5         # m: moved less than this in --stuck-time seconds = stuck
+RESET_JUMP = 5.0         # m backwards in one sample = a world reset (Gazebo "Restart simulation")
 
 
 def wrap(a):
@@ -59,22 +64,23 @@ def main():
             st["last_ack"] = time.time()
             st["acks"] += 1
 
-    subs = [s.declare_subscriber(KEY_POSITIONS, on_pos), s.declare_subscriber(KEY_ACKS_A, on_ack)]  # noqa
-    pub_cmd = s.declare_publisher(KEY_CMD_A)
+    subs = [s.declare_subscriber(KEY_POSITIONS, on_pos), s.declare_subscriber(KEY_ACKS, on_ack)]  # noqa
+    pub_cmd = s.declare_publisher(KEY_CMD)
     pub_status = s.declare_publisher(KEY_MISSION)
     log = lambda t: print(f"[mission] {t}", flush=True)   # noqa: E731
-    start_x, goal = START_XY["rover"][0], GOAL_X
+    start_x, goal = START_XY["rover"][0], TARGET_XY[0] - TARGET_REACH
 
-    log(f"waiting for the rover to answer base_a ... (goal x = {goal:.0f} m, speed {args.speed} m/s)")
+    log(f"waiting for the rover to answer the base ... (goal x = {goal:.0f} m, speed {args.speed} m/s)")
     while True:
         with lock:
             ok = st["pos"] is not None and time.time() - st["last_ack"] < 2.0
         if ok:
             break
         time.sleep(0.5)
-    log("rover answers -> driving towards base B")
+    log("rover answers -> driving to the target")
 
     history, assists, state, last_print = [], 0, "DRIVING", 0.0
+    armed, last_x = True, None
     try:
         while True:
             now = time.time()
@@ -82,6 +88,27 @@ def main():
                 x, y, z = st["pos"]
                 yaw = st["yaw"]
                 link_ok = now - st["last_ack"] < 2.0
+
+            # Gazebo's "Restart simulation" puts the rover back on the start line. A 5 m jump
+            # backwards in one sample can only be a teleport, so treat it as a reset: re-arm the
+            # mission and clear the stuck timer (otherwise the jump looks like "stuck on a slope"
+            # and the assist would yank the rover forward for no reason).
+            if last_x is not None and x < last_x - RESET_JUMP:
+                history, assists, last_print = [], 0, 0.0
+                if not armed:
+                    log(f"world reset detected (x = {x:.1f} m) -> driving to the target again")
+                armed, state = True, "DRIVING"
+            last_x = x
+
+            if not armed:
+                # Parked at the target: keep reporting so the dashboard shows the truth, and wait
+                # for a world reset to start the run again instead of exiting (one-shot missions
+                # leave the rover dead in the water after someone clicks Restart).
+                pub_status.put(json.dumps({"time": now, "state": "ARRIVED", "x": round(x, 1),
+                                           "y": round(y, 1), "progress": 100.0, "assists": assists}))
+                time.sleep(1.0)
+                continue
+
             if x >= goal:
                 for _ in range(5):
                     pub_cmd.put(json.dumps({"linear": 0.0, "angular": 0.0}))
@@ -89,8 +116,10 @@ def main():
                 state = "ARRIVED"
                 pub_status.put(json.dumps({"time": now, "state": state, "x": x, "y": y,
                                            "progress": 100.0, "assists": assists}))
-                log(f"ARRIVED next to base B at x = {x:.1f} m ({assists} assists). Rover stopped.")
-                break
+                log(f"ARRIVED at the target, x = {x:.1f} m ({assists} assists). "
+                    f"Rover stopped, waiting for a world reset to go again.")
+                armed = False
+                continue
             heading = math.atan2(-y, LOOKAHEAD)                    # aim back to y = 0
             err = wrap(heading - yaw)
             angular = max(-0.8, min(0.8, 1.5 * err))

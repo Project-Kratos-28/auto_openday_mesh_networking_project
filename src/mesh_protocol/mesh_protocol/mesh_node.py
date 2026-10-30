@@ -2,12 +2,12 @@
     python3 -m mesh_protocol.mesh_node --unit drone_1
 
 Roles
-  base_a (commander): turns mesh/base_a/cmd into COMMAND bundles for the rover, pings the rover
-                      every second when idle, publishes every ACK on mesh/base_a/acks
+  base:               turns mesh/base/cmd into COMMAND bundles for the rover, pings the rover
+                      every second when idle, publishes every ACK on mesh/base/acks,
+                      publishes arriving odometry on mesh/base/telemetry and the photo on mesh/base/photo
   rover:              applies COMMANDs (Gazebo /rover/cmd_vel), answers each with an ACK,
                       stops by itself if no drive command for 2 s (safety watchdog),
-                      sends its odometry as TELEMETRY to base_b twice a second
-  base_b (receiver):  publishes arriving odometry on mesh/base_b/telemetry
+                      sends its odometry as TELEMETRY to the base twice a second
   drones:             relays
 DTN rules (docs/V3_CHANGES.md):
   routed bundles (COMMAND, ACK, TELEMETRY, ...) go hop by hop with CUSTODY TRANSFER: a node keeps
@@ -27,8 +27,8 @@ import time
 from collections import OrderedDict
 
 from mesh_common import (UNITS, BROADCAST, COMMANDER, RECEIVER, ROUTED, FLOODED, SEND_RATE, LATE_AFTER,
-                         LEASE, DRONE_SPEED, DRONE_ACCEL, KEY_POSITIONS, KEY_CMD_A, KEY_ACKS_A, KEY_ODOM_B, KEY_COORD_STATE, KEY_COORD_CMD,
-                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO_B, KEY_PHOTO_CMD, key_tx, key_rx, key_stats,
+                         LEASE, DRONE_SPEED, DRONE_ACCEL, KEY_POSITIONS, KEY_CMD, KEY_ACKS, KEY_ODOM, KEY_COORD_STATE, KEY_COORD_CMD,
+                         KEY_FAKE_CMD_VEL, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, key_tx, key_rx, key_stats,
                          make_packet, encode, decode, expired, bundle_id, open_session)
 from mesh_link_model.sim_io import teleport, fast_available
 from mesh_protocol.leader import Election
@@ -40,7 +40,7 @@ NEIGHBOUR_TIMEOUT = 1.5        # seconds without HELLO -> neighbour gone
 HELLO_PERIOD = 0.5
 SEEN_MEMORY = 5000             # bundle ids remembered by the duplicate filter
 WATCHDOG = 2.0                 # rover stops if no drive command for this long
-PING_PERIOD = 1.0              # base_a pings the rover this often when idle
+PING_PERIOD = 1.0              # the base pings the rover this often when idle
 def _xyz(v):
     """[x, y, z] numbers, or None."""
     ok = isinstance(v, (list, tuple)) and len(v) == 3 and all(
@@ -78,12 +78,12 @@ class MeshNode:
         self.odom = None                                # rover: wheel odometry from Gazebo
         self.last_drive = 0.0                           # rover: time of last drive command
         self.moving = False
-        self.last_cmd_sent = 0.0                        # base_a
+        self.last_cmd_sent = 0.0                        # base
         self.pos = None                                 # own position (like GPS), from the simulation
         self.statuses = {}                              # unit -> {"pos", "neighbours", "time"} (STATUS)
         self.last_leader = None                         # newest LEADER payload we follow (+ "time")
         self.election = Election(unit, time.time())     # drones elect; everyone uses it to pick a leader
-        self.want_mode = None                           # base_a: mesh mode asked for, until a LEADER shows it
+        self.want_mode = None                           # base: mesh mode asked for, until a LEADER shows it
         self.move_asked = (None, 0.0)                   # drones: (target, time) last handed to the mover
         if self.is_drone:
             from mesh_link_model.terrain import Terrain
@@ -109,16 +109,16 @@ class MeshNode:
         if unit == "rover":
             self._setup_gazebo()
         if unit == COMMANDER:
-            self.pub_acks = s.declare_publisher(KEY_ACKS_A)
+            self.pub_acks = s.declare_publisher(KEY_ACKS)
             self.pub_coord = s.declare_publisher(KEY_COORD_STATE)
-            self.subs.append(s.declare_subscriber(KEY_CMD_A, self.on_cmd_request))
+            self.subs.append(s.declare_subscriber(KEY_CMD, self.on_cmd_request))
             self.subs.append(s.declare_subscriber(KEY_COORD_CMD, self.on_mesh_request))
         if unit == RECEIVER:
-            self.pub_odom = s.declare_publisher(KEY_ODOM_B)
-            self.pub_photo = s.declare_publisher(KEY_PHOTO_B)
+            self.pub_odom = s.declare_publisher(KEY_ODOM)
+            self.pub_photo = s.declare_publisher(KEY_PHOTO)
             self.photo, self.photo_logged = Reassembler(), None
             self.subs.append(s.declare_subscriber(KEY_PHOTO_CMD, lambda _: self.originate("rover", "PHOTO_REQ", {})))
-        role = {"rover": "rover", COMMANDER: "commander base", RECEIVER: "receiver base"}.get(unit, "relay drone")
+        role = {"rover": "rover", "base": "base"}.get(unit, "relay drone")
         self.log(f"started as {role}")
 
     # -------------------------------------------------------------- helpers
@@ -455,7 +455,7 @@ class MeshNode:
             self.truth = {"pos": m["positions"]["rover"], "yaw": m.get("yaw", {}).get("rover")}
 
     def on_mesh_request(self, sample):
-        """base_a: mesh ON/OFF from the dashboard or mesh_ctl -> MESH_CMD, repeated until a LEADER shows it."""
+        """base: mesh ON/OFF from the dashboard or mesh_ctl -> MESH_CMD, repeated until a LEADER shows it."""
         mode = sample.payload.to_string().strip().strip('"').lower()
         if mode in ("on", "off"):
             self.want_mode = mode
@@ -464,7 +464,7 @@ class MeshNode:
             self.log(f"ignored mesh command '{mode}' (v3 knows on / off; auto was removed)")
 
     def on_cmd_request(self, sample):
-        """base_a: a velocity command from the mission / GUI -> COMMAND bundle."""
+        """base: a velocity command from the mission / GUI -> COMMAND bundle."""
         try:
             cmd = json.loads(sample.payload.to_bytes())
         except Exception:

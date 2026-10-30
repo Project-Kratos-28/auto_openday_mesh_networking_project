@@ -68,11 +68,21 @@
       <pose>-40.0 0.0 1.62 0 0 0</pose>
       <static>true</static>
     </include>
-    <include>
-      <uri>model://base_station</uri>
-      <name>base_station_2</name>
-      <pose>40.0 0.0 1.38 0 0 0</pose>
+    <model name="target_marker">
       <static>true</static>
-    </include>
+      <pose>30.0 0.0 2.09 0 0 0</pose>
+      <link name="flag">
+        <visual name="pole">
+          <pose>0 0 0.75 0 0 0</pose>
+          <geometry><cylinder><radius>0.04</radius><length>1.5</length></cylinder></geometry>
+          <material><ambient>0.9 0.9 0.9 1</ambient><diffuse>0.9 0.9 0.9 1</diffuse></material>
+        </visual>
+        <visual name="cloth">
+          <pose>0.3 0 1.3 0 0 0</pose>
+          <geometry><box><size>0.6 0.02 0.4</size></box></geometry>
+          <material><ambient>1 0.1 0.1 1</ambient><diffuse>1 0.1 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
   </world>
 </sdf>

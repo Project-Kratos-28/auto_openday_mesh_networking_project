@@ -33,9 +33,9 @@
 
   <section class="panel links">
     <h2>Base links</h2>
-    <div class="link-row"><span>BASE A → ROVER</span><b id="aState">-</b></div>
+    <div class="link-row"><span>BASE → ROVER (commands)</span><b id="aState">-</b></div>
     <div class="sub" id="aRoute">-</div>
-    <div class="link-row"><span>ROVER → BASE B</span><b id="bState">-</b></div>
+    <div class="link-row"><span>ROVER → BASE (odometry)</span><b id="bState">-</b></div>
     <div class="sub" id="bRoute">-</div>
     <h2>Delivery</h2>
     <table class="deliv">
@@ -51,8 +51,8 @@
   </section>
 
   <section class="panel odom">
-    <h2>Odometry at base B · late samples fill the gaps</h2>
-    <svg id="odom" viewBox="0 0 1000 160" preserveAspectRatio="none" role="img" aria-label="Rover position over time as received at base B"></svg>
+    <h2>Odometry at the base · late samples fill the gaps</h2>
+    <svg id="odom" viewBox="0 0 1000 160" preserveAspectRatio="none" role="img" aria-label="Rover position over time as received at the base"></svg>
     <div class="legend"><span><i class="l-ontime"></i>on time</span><span><i class="l-late"></i>arrived late (held during an outage)</span><span id="odomFacts"></span></div>
   </section>
 
@@ -62,11 +62,11 @@
   </section>
 
   <section class="panel photo">
-    <h2>Rover photo → base B</h2>
+    <h2>Rover photo → base</h2>
     <button id="photoBtn">TAKE PHOTO</button>
     <div class="progress"><div id="photoBar"></div></div>
     <div class="sub" id="photoText">no photo yet</div>
-    <img id="photoImg" alt="Photo received at base B" hidden>
+    <img id="photoImg" alt="Photo received at the base" hidden>
   </section>
 
   <section class="panel fail">

@@ -10,25 +10,26 @@ import zlib
 
 # ------------------------------------------------------------------ units
 DRONES = ["drone_1", "drone_2", "drone_3", "drone_4"]
-UNITS = ["rover"] + DRONES + ["base_a", "base_b"]             # mesh names
+UNITS = ["rover"] + DRONES + ["base"]                         # mesh names
 GZ_NAMES = {                                                  # mesh name -> Gazebo model name
-    "rover": "primary_rover", "base_a": "base_station", "base_b": "base_station_2",
+    "rover": "primary_rover", "base": "base_station",
     **{d: d for d in DRONES},
 }
 WORLD = "mars_world"
-COMMANDER = "base_a"          # sends velocity commands to the rover
-RECEIVER = "base_b"           # receives the rover's odometry
+COMMANDER = "base"            # sends commands to the rover
+RECEIVER = "base"             # receives the rover's odometry and photos (same unit: there is one base)
 
 # ------------------------------------------------------------------ layout (x, y)
 # Small demo scale. Same numbers as mars_sim/scripts/build_relay_world.py - change both together.
 START_XY = {
-    "base_a": (-40.0, 0.0), "base_b": (40.0, 0.0), "rover": (-32.0, 0.0),
+    "base": (-40.0, 0.0), "rover": (-32.0, 0.0),
     "drone_1": (-48.0, 3.0), "drone_2": (-48.0, -3.0),
     "drone_3": (-51.0, 3.0), "drone_4": (-51.0, -3.0),
 }
 CRATER_RADIUS = 18.0          # rim radius (generate_crater.py RIM_RADIUS)
 DRONE_HOVER = 3.0             # parked drones hover this high above the ground
-GOAL_X = 33.0                 # mission ends when the rover reaches this x (in front of base B's pad)
+TARGET_XY = (30.0, 0.0)       # science target, past the far crater rim (marker in build_relay_world.py)
+TARGET_REACH = 2.0            # the rover counts as arrived this many metres before the marker
 
 # ------------------------------------------------------------------ movement (demo scale)
 ROVER_SPEED = 1.0             # m/s, mission default (whole trip ~70 s)
@@ -45,11 +46,11 @@ def flight_time(distance):
     return 2 * (distance / DRONE_ACCEL) ** 0.5               # short hop: never reaches full speed
 
 # ------------------------------------------------------------------ radio
-RADIO_RANGE = 32.0            # metres: further than this = no link (base A <-> base B is 80 m)
+RADIO_RANGE = 20.0            # metres: further than this = no link (base <-> target is 70 m)
 LOS_CLEARANCE = 0.5           # line must pass this far above the ground
 # antenna height above each model's origin, from the real models:
 # rover antenna ball 1.27 m, base station dish 10.3 m / beacon 10.8 m, drone antenna under the body
-ANTENNA_HEIGHT = {"rover": 1.3, "base_a": 10.5, "base_b": 10.5}
+ANTENNA_HEIGHT = {"rover": 1.3, "base": 10.5}
 
 
 def antenna_height(unit):
@@ -66,9 +67,9 @@ def key_stats(u): return f"mesh/stats/{u}"   # unit counters -> GUI
 
 KEY_LINKS = "mesh/links"                       # link table (link model -> channel, GUI)
 KEY_POSITIONS = "mesh/positions"               # true x, y, z (+ yaw) of every unit
-KEY_CMD_A = "mesh/base_a/cmd"                  # mission / GUI -> base A: velocity command
-KEY_ACKS_A = "mesh/base_a/acks"                # base A feed: rover confirmed a command
-KEY_ODOM_B = "mesh/base_b/telemetry"           # base B feed: rover odometry
+KEY_CMD = "mesh/base/cmd"                      # mission / GUI -> base: velocity command
+KEY_ACKS = "mesh/base/acks"                    # base feed: rover confirmed a command
+KEY_ODOM = "mesh/base/telemetry"               # base feed: rover odometry
 KEY_COORD_STATE = "mesh/coordinator/state"     # coordinator: mode, relay on/off, drone plan
 KEY_COORD_CMD = "mesh/coordinator/cmd"         # mesh_ctl -> coordinator: on / off / deploy
 KEY_MISSION = "mesh/mission/status"            # mission autopilot progress
@@ -77,8 +78,8 @@ KEY_FAIL_EVENTS = "mesh/failure/events"
 KEY_FAKE_POSE = "mesh/fake/pose"               # fake mode only: teleport a unit
 KEY_FAKE_CMD_VEL = "mesh/fake/cmd_vel"         # fake mode only: rover wheel command
 KEY_EVENTS = "mesh/events"                     # every node -> dashboard: one notable event each
-KEY_PHOTO_B = "mesh/base_b/photo"              # base B -> dashboard: photo progress / image
-KEY_PHOTO_CMD = "mesh/base_b/photo_cmd"        # dashboard -> base B: take a photo
+KEY_PHOTO = "mesh/base/photo"                  # base -> dashboard: photo progress / image
+KEY_PHOTO_CMD = "mesh/base/photo_cmd"          # dashboard -> base: take a photo
 
 # All our programs meet at one local "hub" address (the link model). Only 127.0.0.1,
 # multicast off: we never talk to teammates' laptops on hostel Wi-Fi, and IPv4 avoids

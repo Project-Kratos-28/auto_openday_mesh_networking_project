@@ -1,8 +1,8 @@
 # Starts the whole mesh: link model, radio channel, stand-in injector,
-# and one mesh node per unit (rover, 4 drones, base_a, base_b).
+# and one mesh node per unit (rover, 4 drones, base).
 #   ros2 launch mesh_protocol mesh.launch.py                 # Gazebo must already be running
 #   ros2 launch mesh_protocol mesh.launch.py sim:=true       # also start Gazebo (mars_sim)
-#   ros2 launch mesh_protocol mesh.launch.py mission:=true   # also start the A -> B drive
+#   ros2 launch mesh_protocol mesh.launch.py mission:=true   # also start the drive to the target
 #   ros2 launch mesh_protocol mesh.launch.py fake:=true      # no Gazebo, fake rover
 #   ros2 launch mesh_protocol mesh.launch.py injector:=none  # teammate's real injector instead
 #   ros2 launch mesh_protocol mesh.launch.py mesh:=on      # mesh ON from the start (default off)
@@ -16,7 +16,7 @@ from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunch
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
-UNITS = ["rover", "drone_1", "drone_2", "drone_3", "drone_4", "base_a", "base_b"]
+UNITS = ["rover", "drone_1", "drone_2", "drone_3", "drone_4", "base"]
 
 
 def py(name, module, *args):
@@ -50,7 +50,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("sim", default_value="false", description="also start Gazebo"),
         DeclareLaunchArgument("fake", default_value="false", description="fake rover, no Gazebo"),
-        DeclareLaunchArgument("mission", default_value="false", description="start the A -> B drive"),
+        DeclareLaunchArgument("mission", default_value="false", description="start the drive to the target"),
         DeclareLaunchArgument("injector", default_value="passthrough",
                               description="passthrough = stand-in injector, none = use the real one"),
         DeclareLaunchArgument("mesh", default_value="off", description="mesh mode at start: off | on"),
