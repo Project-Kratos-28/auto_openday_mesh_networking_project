@@ -34,7 +34,7 @@ CF_DIR=$RUN_DIR/cloudflared
 ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
 
 MESH=off
-PASSCODE=${MESH_PASSCODE:-Kr4tos-Rover-Mesh!28}
+PASSCODE=${MESH_PASSCODE:-kratos123}
 HOST=0.0.0.0
 PORT=8080
 FAKE=

@@ -21,7 +21,7 @@ What was added on top of the v4 mission, how it works, and how to run it. Rehear
 Watching the dashboard is public. The three controls (`/api/mesh`, `/api/failure`, `/api/photo`) need the header `X-Passcode`.
 
 - The browser asks in a **masked** dialog (`<input type="password">`, dots instead of letters). A wrong passcode shows an error and asks again; Cancel leaves the controls locked. The right one is kept for the tab only (`sessionStorage`), never in the source.
-- Default: the built-in `Kr4tos-Rover-Mesh!28`. Change it without editing code: `MESH_PASSCODE=... ./scripts/phone_tunnel.sh`, or `--passcode TEXT` on the dashboard. `--passcode ""` turns the check off (loopback demos).
+- Default: the built-in `kratos123`. Change it without editing code: `MESH_PASSCODE=... ./scripts/phone_tunnel.sh`, or `--passcode TEXT` on the dashboard. `--passcode ""` turns the check off (loopback demos).
 - A wrong guess costs the caller one second, so guessing is slow.
 - The passcode travels in clear text over plain http. It keeps visitors out; it is not real authentication. Put TLS in front (the Cloudflare tunnel does) on an untrusted network.
 

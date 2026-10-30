@@ -29,7 +29,7 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 PERIOD = 0.25          # s between snapshots
 MAX_BODY = 64 * 1024   # bytes
 MAX_UPLOAD = 15 * 1024 * 1024
-PASSCODE = os.environ.get("MESH_PASSCODE", "Kr4tos-Rover-Mesh!28")   # --passcode or MESH_PASSCODE overrides; "" disables
+PASSCODE = os.environ.get("MESH_PASSCODE", "kratos123")   # --passcode or MESH_PASSCODE overrides; "" disables
 
 
 def check_failure(cfg):

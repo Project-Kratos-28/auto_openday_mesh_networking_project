@@ -127,7 +127,7 @@ What `start` does, in order: builds if needed, checks the packages, starts the d
 | `--no-qr` | do not open the QR window |
 | `--detach` | leave it running in the background |
 
-**Passcode:** watching the dashboard is public. The mesh toggle, the failure controls and TAKE PHOTO need the passcode, which a masked box asks for once per browser tab. Default: `Kr4tos-Rover-Mesh!28`. Change it with `MESH_PASSCODE=... ./scripts/mars_demo.sh start`. It travels in clear text over plain http, so it keeps visitors out but is not real security.
+**Passcode:** watching the dashboard is public. The mesh toggle, the failure controls and TAKE PHOTO need the passcode, which a masked box asks for once per browser tab. Default: `kratos123`. Change it with `MESH_PASSCODE=... ./scripts/mars_demo.sh start`. It travels in clear text over plain http, so it keeps visitors out but is not real security.
 
 **On a VM** (virtual GPU, Gazebo's default `ogre2` renderer fails): use `./scripts/phone_tunnel.sh`. It starts Gazebo with the classic `ogre` renderer plus a Cloudflare tunnel for the phone page, then run the mission yourself with `ros2 run mesh_protocol mission`. Details: [`docs/OPEN_DAY.md`](docs/OPEN_DAY.md).
 
