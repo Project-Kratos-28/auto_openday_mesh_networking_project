@@ -68,7 +68,7 @@ Read this first if you have to explain the project. Every word here is used late
 
 ## 3. Current state of the project
 
-**Everything is merged into `main` and tagged `demo-final`.** The build and all unit tests pass (103 tests), and the demo has been run end to end on the team laptop.
+**Everything is merged into `main` and tagged `demo-final`.** The build and all unit tests pass (117 tests), and the demo has been run end to end on the team laptop.
 
 | Part | What it does | Where (`src/`) | Status |
 |---|---|---|---|
@@ -79,7 +79,7 @@ Read this first if you have to explain the project. Every word here is used late
 | Mesh protocol (DTN) | One node per unit: custody transfer, store and forward, lifetimes, priorities, routes, CRC check | `mesh_protocol` | ✅ |
 | Leader drone | Election with a lease; the leader plans drone positions and routes and follows the rover | `mesh_protocol` | ✅ |
 | Mission autopilot | Drives the rover to the target, asks for a photo on arrival, re-arms after a world reset | `mesh_protocol` | ✅ |
-| Camera, photos, phone upload | Live feed (2 fps), photo on arrival or button, phone QR upload sent over the mesh, sha256 check, packet log | `mesh_protocol`, `mesh_dashboard` | ✅ |
+| Camera, photos, message from base | Live feed (2 fps), rover photo on arrival or button (rover → base), and a **message from the base to the rover**: a picture sent from a visitor's phone that the rover shows on its screen and that struggles to form when the link is down; sha256 check, packet log | `mesh_protocol`, `mesh_dashboard` | ✅ |
 | Mission-control dashboard | Crater map with live routes, held bundles, delivery rates, late odometry, event log, camera, photo, QR, failure controls, passcode | `mesh_dashboard` | ✅ |
 | Demo runner | One command starts everything, with a QR window and an optional public tunnel | `scripts/` | ✅ |
 | Failure injection | **Stand-in only** (`passthrough_injector`: drop / corrupt). The full module is not built | `mesh_link_model` | 🟡 |
@@ -92,7 +92,7 @@ Read this first if you have to explain the project. Every word here is used late
 | v3: DTN mesh, leader election, photo transfer, web dashboard, smooth drone flight | ✅ in `main` |
 | v4 Step 1 (one base, science target, 20 m radio) and Step A (kill/revive fix, code-review fixes) | ✅ in `main` |
 | Passcode-locked dashboard, `mars_demo.sh` runner, QR window, Cloudflare tunnel, requirements file, mission re-arm (PR #1) | ✅ in `main` |
-| Real rover camera, live feed, phone QR upload, packet log | ✅ in `main` |
+| Real rover camera, live feed, phone QR upload, packet log | ✅ in `main` (the phone picture is now a base → rover message, see section 8) |
 | Open-day docs (`docs/OPEN_DAY.md`) and merge of the above (PR #2) | ✅ in `main` |
 | Old PyQt6 GUI (`Ronak_GUI` branch) | ❌ **not merged and not used**: replaced by the web dashboard |
 | Old v4 plan, steps 2 to 6 (self-driving rover, orbiter / Earth, data limit, scenario runner, Earth panel) | ❌ **dropped**: that plan is outdated |
@@ -139,7 +139,7 @@ Campus Wi-Fi often stops devices from talking to each other, so a link to the la
 |---|---|---|
 | **Demonstrator** (the laptop owner) | the dashboard on the laptop, with the controls | `http://localhost:8080` and the passcode |
 | **Viewers who just watch** | the QR window the script opens, or the public dashboard link it prints | `https://….trycloudflare.com`: view only, the controls need the passcode |
-| **Visitors who send a photo** | the QR in the dashboard's "Send a photo from your phone" panel | a second public link `https://….trycloudflare.com/phone` |
+| **Visitors who send a picture to the rover** | the QR in the dashboard's "Message from base → rover" panel | a second public link `https://….trycloudflare.com/phone` |
 
 - `./scripts/mars_demo.sh start --tunnel` creates both public links by itself and prints them. The phone link is created **first**, because the dashboard reads it at start-up.
 - Put the laptop on a **phone hotspot or other internet connection** you trust. Cloudflare tunnels need outbound internet, and a restrictive campus network may block them. Try it on the venue network before the audience arrives.
@@ -158,9 +158,9 @@ Do the steps in this order. The failure demo goes **last**.
 1. **Show the problem (mesh OFF).** The rover drives from the base toward the flag. The base is CONNECTED at first. Once the hills (or the 20 m range) cut the line, the dashboard shows NO CONNECTION and the rover stops after 2 s. Say: "its radio is blocked by the crater, so it waits."
 2. **Switch the mesh ON.** Click the **MESH** toggle and enter the passcode. The leader drone flies the other drones out. The chain forms, the base is CONNECTED again, and the rover drives on. Held odometry arrives late (amber on the odometry graph), then live (green). The rover needs 0 drones near the base, 1 at about x = -12, 2 at about x = 0 and 3 at the target; the spare drone shortens the longest hop.
 3. **Arrival and photo.** The rover stops 2 m before the flag and sends a photo of what its camera sees. Show the **live camera** panel (2 fps) and press **TAKE PHOTO** for another. It arrives in 1 KB chunks and is checked with sha256. The event log and packet log show the chunks and the route they took.
-4. **Phone photo.** A visitor scans the QR code and uploads a picture. It is shrunk, sent rover to drones to base over the mesh like any other data, and shown on the dashboard.
+4. **Message from the base.** A visitor scans the QR code and sends a selfie as "mission control". The base cuts it into chunks and sends them to the **rover** over the mesh; the **Rover screen** panel shows it forming. **Best moment to do it:** send it while the mesh is **OFF** and the rover is out of reach. The chunks pile up at the base (see the held bundles), the screen stays static, and the picture only starts to form when you switch the mesh ON and the drones link up.
 5. **Failure demo (last).** Drop 10 to 20 % of packets: resends go up, nothing is lost. Corrupt packets: the CRC catches them. Select a drone and press **KILL**: the routes change, and if it was the leader another drone takes over in about 2 s. **REVIVE** brings it back.
-6. **Repeat.** Click "Restart simulation" in Gazebo. The rover goes back to the start line and the mission re-arms by itself, so there is no need to restart the script. Reset the mesh toggle to OFF for the next visitor.
+6. **Repeat.** Click "Restart simulation" in Gazebo. Everything starts again from scratch (see walkthrough G): the rover goes back to the start line and the mission re-arms, the drones fly back to their parking spots, the mesh goes **OFF**, and the dashboard clears all its history and reloads itself. There is no need to restart the script.
 
 Tips: in Gazebo scroll out until the base and the flag are both visible, or right-click `primary_rover` in the Entity Tree and choose **Follow**. For odometry over the **whole** trip, turn the mesh ON before the rover leaves (`--mesh on`).
 
@@ -235,7 +235,7 @@ echo "source ~/mars_ws/install/setup.bash" >> ~/.bashrc    # optional: every new
 echo $ROS_DISTRO                                              # → jazzy
 gz sim --version                                              # → Gazebo Sim, version 8.x
 python3 -c "import zenoh, numpy, PIL, segno, gz.transport13; print('python OK')"
-for p in mesh_common mesh_protocol mesh_dashboard mesh_link_model; do python3 -m pytest -q src/$p/test; done   # 5 + 73 + 21 + 4 tests pass
+for p in mesh_common mesh_protocol mesh_dashboard mesh_link_model; do python3 -m pytest -q src/$p/test; done   # 5 + 83 + 24 + 5 tests pass
 ros2 run mesh_protocol selftest                               # optional, ~8 min, whole demo without Gazebo
 ```
 The self-test prints `N/M checks passed` on its last line. Lines marked `[KNOWN ISSUE]` are expected and do not fail the run (see [section 17](#17-known-limits)).
@@ -323,7 +323,7 @@ The dashboard (or `mesh_ctl`) asks the base, which sends `MESH_CMD` to the leade
 ### Camera and photos
 - **Live feed:** the rover turns the newest frame into a JPEG (q55) every 0.5 s and sends it as a `FEED` bundle (lifetime 1 s, bulk). The base publishes `mesh/base/feed`; the dashboard marks frames older than 2 s as frozen.
 - **Photo (button or arrival):** the base sends `PHOTO_REQ`; the rover grabs a real frame (PNG) and sends it as `PHOTO_CHUNK`s (1 KB, base64, sha256 of the whole file). The base reassembles it, and chunks of an older photo are ignored.
-- **Phone photo:** the QR opens `/phone` on a separate small server (port 8081; only `/phone` and `/upload`, images only, 15 MB max). The dashboard shrinks the picture (max 480 px, JPEG q70) and publishes `mesh/rover/phone_photo`; the rover sends it to the base over the mesh.
+- **Message from the base (the phone picture):** the QR opens `/phone` on a separate small server (port 8081; only `/phone` and `/upload`, images only, 15 MB max). The dashboard shrinks the picture (max 480 px, **baseline** JPEG q70, about 30 chunks) and publishes `mesh/base/uplink_photo`. The **base** sends it to the **rover** as `PHOTO_CHUNK` bundles (destination `rover`, bulk priority, custody transfer, its own photo ids). With no link the chunks wait in the base's store; the rover's `Reassembler` collects them, publishes progress on `mesh/rover/uplink` (including the gap-free start of the file, which a browser can draw because baseline JPEGs show their top part) and the dashboard's **Rover screen** shows the picture forming from the top down, then complete with a sha256 check.
 - The QR on the dashboard encodes `PHONE_URL`, else the laptop's LAN address (only works for phones on the same Wi-Fi). `./scripts/mars_demo.sh start --tunnel` sets `PHONE_URL` itself to a public Cloudflare address for the upload page, so the QR works from any network. `./scripts/phone_tunnel.sh` (the VM version) does the same.
 
 ### Zenoh keys
@@ -339,12 +339,14 @@ The dashboard (or `mesh_ctl`) asks the base, which sends `MESH_CMD` to the leade
 | `mesh/base/telemetry` | base → dashboard | odometry + route + delay + `late` |
 | `mesh/base/photo_cmd` · `mesh/base/photo` | dashboard → base · base → dashboard | take a photo · progress, then the image + sha256 `ok` |
 | `mesh/base/feed` | base → dashboard | newest live camera frame (JPEG) |
-| `mesh/rover/phone_photo` | dashboard → rover | a phone picture to send to the base |
+| `mesh/base/uplink_photo` | dashboard → base | a picture (from a visitor's phone) to send to the rover |
+| `mesh/rover/uplink` | rover → dashboard | what the rover has received of that picture: progress, the gap-free start, then the whole image + sha256 `ok` |
 | `mesh/coordinator/cmd` | dashboard, `mesh_ctl` → base | `on` / `off` |
 | `mesh/coordinator/state` | base → dashboard | the newest `LEADER` heartbeat: leader, term, mode, state, chain, drone targets, routes |
 | `mesh/mission/status` | mission → dashboard | rover x, progress %, assists |
 | `mesh/failure/control` | dashboard, terminal → injector, nodes | e.g. `{"corrupt_probability": 0.2, "drop_probability": 0.05}`, `{"kill": "drone_2"}`, `{"revive": "drone_2"}` |
 | `mesh/failure/events` | injector → dashboard | each corrupt / drop event |
+| `mesh/reset` | link model → everyone | the simulation was restarted: `{"n": epoch}`. Every node, the injector and the dashboard start again from scratch |
 
 All mesh programs connect only on **`127.0.0.1`** (one hub at `tcp/127.0.0.1:7447`, multicast off), so the mesh never leaks onto the venue Wi-Fi. Everything (Gazebo, mesh, dashboard) runs on **one laptop**. Only the dashboard (port 8080) and the phone page (port 8081) are served to other devices.
 
@@ -376,7 +378,7 @@ Use these to explain the system step by step. File names tell you where to read 
 2. The rover takes the newest real frame from `/rover/camera` (PNG; the stock picture if no frame is available), cuts it into **1 KB chunks** (base64) and sends them as `PHOTO_CHUNK` bundles: bulk priority, custody transfer, lifetime 300 s, plus the file's **sha256**.
 3. The base's `Reassembler` collects chunks (ignoring chunks of older photos), and when all are in it checks the sha256 and publishes the image on `mesh/base/photo`. The dashboard shows a progress bar, then the picture with "sha256 OK".
 4. The **live feed** uses the same path but is deliberately throw-away: a JPEG every 0.5 s, lifetime 1 s, so under a bad link old frames are dropped instead of queued, and commands are never delayed by video.
-5. A **phone photo** takes the reverse start: the phone uploads to the small server on port 8081, the dashboard shrinks it (max 480 px) and publishes `mesh/rover/phone_photo`, and the rover sends it to the base exactly like step 2.
+5. The **message from the base** (phone picture) goes the other way, see walkthrough F.
 
 ### D. A drone is killed (including the leader)
 1. The dashboard sends `{"kill": "drone_2"}` on `mesh/failure/control`. That node stops taking part in the mesh, and forgets any leader role, election timer, orders and mesh mode.
@@ -388,6 +390,20 @@ Use these to explain the system step by step. File names tell you where to read 
 1. With "corrupt 20 %", the injector flips random bits in the raw bytes of some packets on their way to a receiver. It never decodes packets, so the nodes see exactly what noise would do.
 2. The receiver's CRC32 check fails, so it counts `bad_crc` and drops the packet **without** sending `CUSTODY_ACK`.
 3. The sender, still holding custody, resends after its timer. The bundle arrives on a later try, or expires if its lifetime runs out first. Nothing crashes, and the delivery table on the dashboard shows sent, delivered and expired counts.
+
+### F. A message from mission control to the rover (the phone picture)
+1. A visitor opens the QR link and takes a selfie. The small upload server (port 8081) gives it to the dashboard, which shrinks it to a baseline JPEG (about 30 KB) and publishes `mesh/base/uplink_photo`.
+2. The **base** cuts it into 1 KB `PHOTO_CHUNK` bundles addressed to the **rover** (bulk priority, custody, lifetime 300 s) and takes custody of all of them. The dashboard's **Rover screen** now says "sent from the base, the rover has received nothing yet".
+3. **Mesh OFF and the rover out of reach:** the base has no usable next hop, so the chunks just sit in its store (you can see them as held bundles for the base). The rover's screen stays as static. If the rover is still in range, or when the link comes back for a while, only some chunks get through: the picture **struggles to form** from the top down and stalls with "link lost, the rest is waiting at the base".
+4. **Mesh ON:** the drones deploy, the link comes up, the stored chunks are released (a link coming back "kicks" the retries), custody moves hop by hop, and the rover's `Reassembler` fills in the missing chunks. When the last one arrives it checks the sha256 and the picture is shown complete.
+5. This is the same store-and-forward behaviour as the odometry that arrives late, but visible to a visitor. The message and the rover's own camera photo (rover → base) use separate ids, panels and Zenoh keys, so one can never overwrite the other.
+
+### G. The simulation is restarted ("Restart simulation" in Gazebo)
+1. Gazebo puts every model back at its start and sets the simulation time back to 0. The **link model** reads the simulation time from every pose message; when it goes **backwards** it publishes `mesh/reset` with a new epoch number.
+2. **Every node** (base, rover, drones) forgets the run before: its store of waiting bundles, duplicate filter, neighbours, counters, the leader and election, pictures in progress and the mesh mode, which goes back to **OFF**. A killed drone comes back. Each drone also asks its mover to fly to its parking spot, in case it was still flying.
+3. **Late packets of the old run are ignored:** `LEADER` and `MESH_CMD` carry the epoch, and a node drops any with an older epoch. Otherwise a heartbeat still in flight could switch the mesh back ON.
+4. The **injector** puts packet loss and corruption back to 0. The **dashboard** bridge clears its graphs, log, pictures, counters and sliders and bumps its own epoch, and the open page sees the new epoch and **reloads itself**, so nothing from before is left on the screen.
+5. The **mission** notices the rover jumping back to the start line and re-arms, so the next run drives again from the beginning.
 
 ## 10. The dashboard
 
@@ -403,7 +419,7 @@ Use these to explain the system step by step. File names tell you where to read 
 | Event log | resends, expiries, elections, route changes, photos, kills and revives, plus the packet log for feed and photo chunks |
 | Rover live camera | the 2 fps feed from the rover's Gazebo camera |
 | Rover photo → base | **TAKE PHOTO** button, progress bar, the received picture and its sha256 result |
-| Send a photo from your phone | QR code for the upload page |
+| Message from base → rover | QR code for the upload page, then the **Rover screen**: the picture the visitor sent, forming as chunks reach the rover, with a progress bar |
 | Failure injection | drop % and corrupt % sliders, and a unit picker with **KILL** / **REVIVE** |
 
 Server details (`mesh_dashboard/server.py`): `GET /` page, `GET /events` server-sent events (a snapshot 4 times a second plus log lines), `GET /qr.svg`, and `POST /api/mesh`, `/api/failure`, `/api/photo`. The POST routes check their input (unknown keys get 400) and need the `X-Passcode` header; a wrong guess costs one second. All Zenoh in and out is in `bridge.py` only.
@@ -422,13 +438,13 @@ Server details (`mesh_dashboard/server.py`): `GET /` page, `GET /events` server-
 | **`mesh_protocol/mesh_node.py`** | **One node per unit**, the heart of the protocol: duplicate filter, custody transfer, store / forward, expiry, CRC check, HELLO neighbours, flooding control packets, the rover's drive + watchdog + camera, the base's command/ACK/photo handling, kill / revive, and the leader loop. Large, but it only wires together the pure-logic modules below. |
 | **`mesh_protocol/store.py`** | The custody store: `add`, `due` (what to (re)send now, best priority first, within the send budget), `ack`, `expire`, `kick`. Pure logic. |
 | **`mesh_protocol/routing.py`** | `compute_routes`: shortest path by hops (ties: better link quality) where only relay drones may be in the middle. Pure logic. |
-| **`mesh_protocol/leader.py`** | `Election` (lease, term, jitter) and `Coordinator` (the leader's planning: reachability checks, assignment of spots, which drone moves when, guessing a silent rover's position). Pure logic. |
+| **`mesh_protocol/leader.py`** | `Election` (lease, term, jitter) and `Coordinator` (the leader's planning: reachability checks, assignment of spots, which drone moves when, guessing a silent rover's position, keeping drones apart with `clear_of` and the remembered positions of silent drones). Pure logic. |
 | **`mesh_protocol/mover.py`** | `Mover`: flies one drone smoothly in a background thread (speed, acceleration, ground clearance, facing the way it flies), so slow Gazebo calls never block the radio handling. |
 | **`mesh_protocol/photo.py`** | `Camera` (newest Gazebo frame → image bytes), `chunks` and `Reassembler` (1 KB pieces + sha256). |
 | **`mesh_protocol/mission.py`** | The autopilot: steers the rover to the target, asks for a photo on arrival, assist when stuck, detects a world reset and re-arms. |
 | **`mesh_protocol/tools.py`** | Small commands: `mesh_ctl`, `mesh_monitor`, `send_cmd`, `move_unit`. |
 | **`mesh_protocol/selftest.py`** | Runs the whole demo without Gazebo (fake rover) and checks the behaviour: connections, mesh on/off, resends, leader failover, kill / revive, photo integrity. |
-| **`mesh_dashboard/bridge.py`** | The only code that talks Zenoh for the dashboard: builds the snapshot the page draws, collects events, sends the mesh / failure / photo commands, shrinks phone pictures. |
+| **`mesh_dashboard/bridge.py`** | The only code that talks Zenoh for the dashboard: builds the snapshot the page draws, collects events, sends the mesh / failure / photo commands, shrinks phone pictures and hands them to the base. |
 | **`mesh_dashboard/server.py`** | A small standard-library web server: the page, live updates (server-sent events), the QR image, the passcode check and the POST routes; a second port serves only the phone upload page. |
 | **`mesh_dashboard/static/`** | `index.html`, `style.css`, `app.js` (the drawing: map, graphs, panels) and `phone.html` (upload page). No external URLs. |
 | **`mars_sim/scripts/generate_crater.py`** | Makes the crater terrain mesh (`crater.obj`) from a formula: floor, rim, plain, bumps. |
@@ -456,7 +472,7 @@ Every choice below was made on purpose, and several were forced by problems we h
 - **Web dashboard instead of the PyQt GUI.** It runs in any browser (including a phone), needs no extra install, has no external URLs, and could be given a passcode and a QR upload page. The PyQt prototype was never merged.
 - **Passcode only on the controls.** Visitors can watch, but only the team can switch the mesh, kill drones or take photos. It is clear-text over http, so it is a polite lock, not security.
 - **`ogre` render engine.** The default `ogre2` fails on virtual GPUs (VMs). The classic engine works on both.
-- **Pure-logic modules.** Store, routing, election/coordinator, photo and mover contain no Zenoh or Gazebo calls, so each has fast unit tests (103 in total), and the self-test runs the whole system without Gazebo.
+- **Pure-logic modules.** Store, routing, election/coordinator, photo and mover contain no Zenoh or Gazebo calls, so each has fast unit tests (117 in total), and the self-test runs the whole system without Gazebo.
 
 ## 13. Commands and options
 
@@ -508,7 +524,7 @@ ros2 run mesh_protocol selftest              # check the demo still works
 
 **Failure-injection teammates:** the full module would be a new package `failure_injection` that subscribes to `mesh/*/air`, changes, drops or delays the raw bytes, and publishes to `mesh/<unit>/rx`. Copy the interface of `mesh_link_model/passthrough_injector.py` (same keys, live settings on `mesh/failure/control`, events on `mesh/failure/events`) and run the mesh with `injector:=none`.
 
-**Tests:** `mesh_common` 5, `mesh_protocol` 73, `mesh_dashboard` 21, `mesh_link_model` 4 (103 in total, all passing on `main`). The camera feed, phone upload and packet events are only checked by hand in the live run.
+**Tests:** `mesh_common` 5, `mesh_protocol` 78, `mesh_dashboard` 22, `mesh_link_model` 4 (109 in total, all passing on `main`). The camera feed, phone upload and packet events are only checked by hand in the live run.
 
 ## 15. Repository layout
 
@@ -565,12 +581,13 @@ Be honest with visitors about these. The first two are why the self-test prints 
 
 1. **A short link drop when the drones first deploy.** Right after MESH ON, the link can drop for a few seconds, once, because a second drone may briefly declare itself leader while they all start moving. It heals by itself. Some self-test limits are loosened for this and marked `TEMP` in `selftest.py`.
 2. **Two leaders after a kill + revive ("split brain").** With one drone dead the chain is cut, so the far drone leads its own group, and the group around the real leader may not be redeployed within 15 s. Keep the failure demo short; if it goes wrong, switch the mesh OFF and ON, or restart the sim. (Reviving a killed leader itself is fixed.)
-3. **A photo right after a drone kill may not finish** until the relay chain has re-formed. Do the failure demo last and give it a few seconds.
-4. **The failure-injection module is a stand-in.** Drop and corrupt work; scripted failures and delays are not built.
-5. **Drones are not real flying robots.** They glide with `set_pose`: no flight physics, wind or battery.
-6. **The phone upload page has no passcode.** Anyone with the QR link can upload an image (images only, 15 MB max). Don't post the link publicly: with `--tunnel` it is reachable from the internet while the demo runs. The tunnel addresses change on every run.
-7. **Weak passcode protection.** It is sent in clear text over http; use a tunnel (TLS) on an untrusted network.
-8. **Run it once on the demo machine before open day.** The Gazebo window, camera, QR and tunnel are not covered by automated tests.
+3. **Drones can still overlap in extreme cases.** There is no collision physics, so the leader keeps drones apart itself: a killed drone hangs frozen where it died and is remembered as a "ghost", new relay spots are kept at least 2.5 m away from ghosts and from each other (1.5 m if the chain is tight), and a revived drone that wakes up on top of another is sent away. In a random test of kills and revives this removed the overlaps when none or one drone was dead; it can still happen when two or three drones are dead and the only possible relay spot is where a dead drone hangs.
+4. **A photo right after a drone kill may not finish** until the relay chain has re-formed. Do the failure demo last and give it a few seconds.
+5. **The failure-injection module is a stand-in.** Drop and corrupt work; scripted failures and delays are not built.
+6. **Drones are not real flying robots.** They glide with `set_pose`: no flight physics, wind or battery.
+7. **The phone upload page has no passcode.** Anyone with the QR link can send a picture to the rover's screen (images only, 15 MB max). Don't post the link publicly: with `--tunnel` it is reachable from the internet while the demo runs. The tunnel addresses change on every run.
+8. **Weak passcode protection.** It is sent in clear text over http; use a tunnel (TLS) on an untrusted network.
+9. **Run it once on the demo machine before open day.** The Gazebo window, camera, QR and tunnel are not covered by automated tests.
 
 ## 18. Questions visitors ask (and short answers)
 
@@ -594,7 +611,7 @@ Be honest with visitors about these. The first two are why the self-test prints 
 
 **How do we know the photo is not damaged?** It travels in 1 KB chunks with a sha256 fingerprint of the whole file; the base only shows "OK" if the fingerprint of the reassembled picture matches.
 
-**How does a phone photo get to the base?** The phone uploads to our laptop, then the picture is sent from the rover to the base through the drones like the rover's own photo.
+**What is the phone selfie for?** It is a message from mission control to the rover. The visitor plays mission control: the picture goes from the base through the drones to the rover, whose screen shows it forming. If you send it while the mesh is OFF and the rover is out of reach, it cannot get through: the pieces wait at the base, and the picture only appears after the mesh is switched ON.
 
 **Is the data encrypted or secure?** No. The mesh has no encryption or authentication, and the passcode is only a lock for the demo controls. Real missions would need both.
 
