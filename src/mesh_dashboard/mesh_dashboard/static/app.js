@@ -224,30 +224,41 @@ function addLog(e) {
 
 // ---------------------------------------------------------------- wiring
 // Controls are locked by a passcode the server checks on every POST. It is never stored in this
-// file: the browser asks once per tab (sessionStorage) and the header travels in clear text.
+// file: the browser asks once per tab (sessionStorage), typed into a masked box, and the header
+// travels in clear text (put TLS in front on an untrusted network).
 const PASS_KEY = "meshPasscode";
+let passAsk = null;
 
-function passcode(ask) {
-  let p = sessionStorage.getItem(PASS_KEY);
-  if (!p || ask) {
-    p = window.prompt("Passcode for simulation controls:");
-    if (p) sessionStorage.setItem(PASS_KEY, p);
-  }
-  return p || "";
+function askPasscode(wrong) {
+  if (passAsk) return passAsk;                     // several clicks at once share one dialog
+  const dlg = $("passDlg"), input = $("passIn");
+  $("passErr").hidden = !wrong;
+  input.value = "";
+  passAsk = new Promise((resolve) => {
+    dlg.addEventListener("close", () => {
+      const p = dlg.returnValue === "ok" ? input.value : "";
+      input.value = "";
+      passAsk = null;
+      if (p) sessionStorage.setItem(PASS_KEY, p);
+      resolve(p);
+    }, { once: true });
+    dlg.returnValue = "";
+    dlg.showModal();
+    input.focus();
+  });
+  return passAsk;
 }
 
-async function post(path, body, retried) {
+async function post(path, body, wrong) {
   try {
     const r = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Passcode": passcode(false) },
+      headers: { "Content-Type": "application/json", "X-Passcode": sessionStorage.getItem(PASS_KEY) || "" },
       body: JSON.stringify(body),
     });
     if (r.status !== 401) return;
     sessionStorage.removeItem(PASS_KEY);
-    if (!retried && passcode(true)) return post(path, body, true);
-    console.warn("controls locked: passcode refused");
-    window.alert("Controls are locked: wrong passcode.");
+    if (await askPasscode(wrong)) return post(path, body, true);   // Cancel leaves the controls locked
   } catch (err) { console.warn(err); }
 }
 $("meshBtn").onclick = () => post("/api/mesh", { on: $("meshBtn").getAttribute("aria-pressed") !== "true" });

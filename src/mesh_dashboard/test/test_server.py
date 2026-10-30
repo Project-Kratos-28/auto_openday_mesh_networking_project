@@ -51,7 +51,7 @@ def open_server():
     srv.shutdown()
 
 
-PASSCODE = "kratos123"
+from mesh_dashboard.server import PASSCODE
 
 
 def post(url, body, passcode=PASSCODE):
@@ -165,7 +165,7 @@ def test_post_with_wrong_passcode_refused(server):
 
 def test_post_with_right_passcode_accepted(server):
     url, b = server
-    assert post(url + "/api/mesh", {"on": True}, passcode="kratos123") == 200
+    assert post(url + "/api/mesh", {"on": True}, passcode=PASSCODE) == 200
     assert b.calls == [("mesh", True)]
 
 

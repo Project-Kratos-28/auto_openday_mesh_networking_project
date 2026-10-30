@@ -62,3 +62,10 @@ select { font: inherit; color: var(--text); background: #16233a; border: 1px sol
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; grid-template-areas: "map" "links" "odom" "held" "feed" "photo" "log" "qr" "fail"; }
 }
+
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; }
+dialog::backdrop { background: rgba(0, 0, 0, .6); }
+dialog form { display: grid; gap: 10px; min-width: 260px; }
+dialog input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid #2c4366; border-radius: 6px; padding: 8px; }
+dialog p { margin: 0; }
+dialog .actions { display: flex; gap: 8px; justify-content: flex-end; }

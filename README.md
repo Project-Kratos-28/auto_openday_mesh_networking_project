@@ -3,7 +3,9 @@
 
 A ROS 2 + Gazebo simulation of a rover that loses contact with its base station inside a crater. A team of 4 relay drones forms a **mesh network** (our own protocol, on **[Zenoh](https://zenoh.io)**) that keeps the rover connected to **two base stations**: base A drives the rover, and base B receives its odometry.
 
-**v3 (this branch):** the mesh works like NASA's **Delay/Disruption Tolerant Networking (DTN)**: hop-by-hop custody transfer, store and forward, per-packet lifetimes, priorities, assigned routes, a coordinator that runs on an **elected leader drone**, a rover photo sent in chunks, and a mission-control **web dashboard**. What changed from v2 and where the work stands: [`docs/V3_CHANGES.md`](docs/V3_CHANGES.md).
+**Open day (v4 + camera):** live rover camera, photo on arrival and by button, phone QR upload through the mesh, passcode-locked controls: [`docs/OPEN_DAY.md`](docs/OPEN_DAY.md).
+
+**v3:** the mesh works like NASA's **Delay/Disruption Tolerant Networking (DTN)**: hop-by-hop custody transfer, store and forward, per-packet lifetimes, priorities, assigned routes, a coordinator that runs on an **elected leader drone**, a rover photo sent in chunks, and a mission-control **web dashboard**. What changed from v2 and where the work stands: [`docs/V3_CHANGES.md`](docs/V3_CHANGES.md).
 
 ![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-blue) ![Gazebo Harmonic](https://img.shields.io/badge/Gazebo-Harmonic-orange) ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420) ![Python](https://img.shields.io/badge/Python-3.12-3776AB)
 
@@ -129,7 +131,7 @@ Open 4 terminals. In **each** one run `cd ~/mars_ws && source install/setup.bash
 |---|---|---|
 | T1 | `ros2 launch mars_sim sim.launch.py` | Gazebo with the crater world (press ▶ if paused) |
 | T2 | `ros2 launch mesh_protocol mesh.launch.py` | link model, radio, injector, 7 mesh nodes (the drones elect a leader). **Mesh starts OFF** |
-| T3 | `ros2 run mesh_dashboard dashboard` | mission-control dashboard: open **http://localhost:8080** (mesh toggle, photo, failure controls) |
+| T3 | `ros2 run mesh_dashboard dashboard` | mission-control dashboard: open **http://localhost:8080** (mesh toggle, photo, failure controls; the controls ask for the passcode in a masked box, see [`docs/OPEN_DAY.md`](docs/OPEN_DAY.md)) |
 | T4 | `ros2 run mesh_protocol mission` | base A drives the rover to base B (1 m/s, about 70 s) |
 
 Optional T5: `ros2 run mesh_protocol mesh_monitor` (text view of everything).

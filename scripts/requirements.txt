@@ -14,3 +14,7 @@ eclipse-zenoh>=1.10,<1.11
 # Tests only (`pytest src/*/test`), not needed to run the demo. 7.4 is what Ubuntu ships, 8.x is
 # what pip installs, so accept both instead of forcing an upgrade.
 pytest>=7,<9
+
+# Camera feed, photo upload and the phone QR code (docs/OPEN_DAY.md).
+Pillow>=10
+segno>=1.6

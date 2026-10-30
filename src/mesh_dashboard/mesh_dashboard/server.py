@@ -29,7 +29,7 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 PERIOD = 0.25          # s between snapshots
 MAX_BODY = 64 * 1024   # bytes
 MAX_UPLOAD = 15 * 1024 * 1024
-PASSCODE = "kratos123"  # default; change with --passcode or empty string to disable
+PASSCODE = os.environ.get("MESH_PASSCODE", "Kr4tos-Rover-Mesh!28")   # --passcode or MESH_PASSCODE overrides; "" disables
 
 
 def check_failure(cfg):
@@ -157,6 +157,7 @@ def make_server(bridge, host="127.0.0.1", port=8080, passcode=PASSCODE):
                 return self._reply(415, b'{"error": "send application/json"}')
             supplied = self.headers.get("X-Passcode") or ""
             if passcode and not hmac.compare_digest(supplied.encode(), passcode.encode()):
+                time.sleep(1)                       # a wrong guess costs a second: brute force is slow
                 return self._reply(401, b'{"error": "passcode required"}')
             try:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -188,7 +189,7 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--passcode", default=PASSCODE,
-                    help='controls passcode (default "kratos123", "" disables the check)')
+                    help='controls passcode (default: $MESH_PASSCODE or the built-in one, "" disables the check)')
     args, _ = ap.parse_known_args()
     from mesh_dashboard.bridge import Bridge
     bridge = Bridge()

@@ -11,7 +11,7 @@
 #
 # Options for start:
 #   --mesh on|off        mesh mode at launch            (default: off = demo starts with direct links)
-#   --passcode TEXT      dashboard controls passcode    (default: kratos123, "" disables)
+#   --passcode TEXT      dashboard controls passcode    (default: $MESH_PASSCODE or built in, "" disables)
 #   --host ADDR          dashboard bind address         (default: 0.0.0.0 = LAN, 127.0.0.1 = local only)
 #   --port N             dashboard port                 (default: 8080)
 #   --fake               no Gazebo, fake rover
@@ -34,7 +34,7 @@ CF_DIR=$RUN_DIR/cloudflared
 ROS_SETUP=${ROS_SETUP:-/opt/ros/jazzy/setup.bash}
 
 MESH=off
-PASSCODE=kratos123
+PASSCODE=${MESH_PASSCODE:-Kr4tos-Rover-Mesh!28}
 HOST=0.0.0.0
 PORT=8080
 FAKE=

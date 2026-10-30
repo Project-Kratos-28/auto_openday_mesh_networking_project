@@ -96,5 +96,16 @@
   </section>
 </main>
 <script src="/static/app.js"></script>
+<dialog id="passDlg">
+  <form method="dialog">
+    <label for="passIn">Passcode for simulation controls</label>
+    <input id="passIn" type="password" autocomplete="off" required>
+    <p id="passErr" class="bad" hidden>Wrong passcode, try again.</p>
+    <div class="actions">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="ok">Unlock</button>
+    </div>
+  </form>
+</dialog>
 </body>
 </html>
