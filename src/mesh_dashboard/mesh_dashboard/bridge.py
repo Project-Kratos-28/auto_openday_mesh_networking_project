@@ -154,7 +154,7 @@ class Bridge:
         from PIL import Image, ImageOps, UnidentifiedImageError
         try:
             img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
-        except (UnidentifiedImageError, OSError) as e:
+        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
             raise ValueError("not an image") from e
         img.thumbnail((480, 480))                   # ~30 KB: about 30 chunks over the mesh
         out = io.BytesIO()
