@@ -22,6 +22,8 @@ MOVE_SLACK = 2.0          # s on top of the flight time to wait for a drone to r
 ARRIVED = 0.5             # m
 ROVER_STALE = 1.0         # s: a rover report older than this is old news (the rover is out of reach)
 ROVER_GUESS_MAX = 4.0     # s: guess where the silent rover is by its last speed, for at most this long
+MIN_SEP = 2.5             # m: no two drones are ever sent (or left) closer than this: there is no collision physics
+TIGHT_SEP = 1.5           # m: the least we accept when the chain has no room for more
 
 
 class Election:
@@ -86,6 +88,19 @@ def connected(terrain, pos, drones=DRONES):
     return reachable(terrain, pos, "rover", "base", drones)
 
 
+_NUDGES = ((0, 0), (0, 1.5), (1.5, 0), (-1.5, 0), (0, 3), (3, 0), (-3, 0), (3, 3), (-3, 3),    # (sideways, up) in metres,
+           (0, 6), (6, 0), (-6, 0), (0, 9))                                                        # smallest move first
+
+
+def clear_of(spot, others, sep=MIN_SEP):
+    """`spot`, or the nearest free place above or beside it that is at least `sep` from every point in `others`."""
+    for dy, dz in _NUDGES:
+        cand = (spot[0], round(spot[1] + dy, 1), round(spot[2] + dz, 1))
+        if all(math.dist(cand, o) >= sep for o in others):
+            return cand
+    return tuple(spot)
+
+
 def assign(spots, here):
     """Give each spot to a drone so the longest flight (then the total) is as short as possible.
     spots: [(x, y, z)]; here: {drone: (x, y, z)} with at least len(spots) drones. Returns {drone: spot}."""
@@ -107,6 +122,7 @@ class Coordinator:
         self.chains, self.state, self.reason, self.on_since = {}, "STANDBY", "mesh off", None
         self.next_check, self.vel, self.last_rover = 0.0, [0.0, 0.0], None
         self.drones = list(DRONES)             # drones we have a STATUS from (alive and in reach)
+        self.seen, self.ghosts = {}, {}        # last reported spot of every drone / of the silent ones (still hanging there)
 
     def adopt(self, msg):
         """A new leader carries on from the last heartbeat it heard."""
@@ -116,6 +132,8 @@ class Coordinator:
             self.goal = dict(self.targets)
         self.chains, self.state = msg.get("chains", {}), msg.get("state", self.state)
         self.on_since = msg.get("on_since")
+        self.ghosts = {d: tuple(p) for d, p in msg.get("ghosts", {}).items()}
+        self.seen.update(self.ghosts)
 
     def set_mode(self, mode):
         if mode in ("on", "off"):
@@ -145,10 +163,45 @@ class Coordinator:
         owner = {names.index(n): d for d, spot in got.items() for n in names if new[n] is spot}
         new = {owner[i]: new[n] for i, n in enumerate(names)}
         ch = {b: [owner[names.index(n)] for n in chain] for b, chain in ch.items()}
+        new = self._spread(new, pos)
         self.goal, self.chains = {**self.goal, **new}, ch
         self.state, self.reason = "DEPLOYED", why
         self.log(f"t={now:.1f} plan ({why}): chain to base {ch.get('base')}")
         self._queue()
+
+    def _spread(self, new, pos):
+        """Keep the planned spots away from drones that cannot move: silent ones hang frozen in the air (a
+        killed drone has no physics to fall or drift), so a relay planned onto its spot would sit inside it.
+        Shifts are kept only if the chain still works. A drone the plan leaves out keeps its old goal, which
+        must not be a spot another drone now flies to."""
+        ghosts = list(self.ghosts.values())
+        spots = new
+        for sep in (MIN_SEP, TIGHT_SEP):            # a tight chain may only allow a small shift
+            moved = {}
+            for d, spot in new.items():
+                moved[d] = clear_of(spot, ghosts + list(moved.values()), sep)
+            if connected(self.terrain, {**pos, **moved}, self.drones):
+                spots = moved
+                break
+        for d in self.drones:
+            if d not in spots:
+                rest = [self.goal[x] for x in self.drones if x != d and x not in spots]
+                self.goal[d] = clear_of(self.goal[d], ghosts + list(spots.values()) + rest)
+        return spots
+
+    def _declutter(self, pos):
+        """Two drones in the same place: send the one the chain needs less away. A revived drone often wakes
+        up right on top of the relay that replaced it, and nothing else would ever move it."""
+        chain = self.chains.get("base", [])
+        for a, b in itertools.combinations([d for d in self.drones if d in pos], 2):
+            if math.dist(pos[a], pos[b]) < MIN_SEP:
+                mover = a if (a not in chain and b in chain) else b
+                others = ([pos[d] for d in self.drones if d in pos and d != mover] + list(self.ghosts.values())
+                          + [self.goal[d] for d in self.drones if d != mover])
+                self.goal[mover] = clear_of(pos[mover], others)
+                self.log(f"{mover} is on top of another drone: moving it to {self.goal[mover]}")
+                self._queue()
+                return
 
     def _queue(self):
         self.order = [d for d in self.drones if math.dist(self.targets[d], self.goal[d]) > ARRIVED]
@@ -198,6 +251,12 @@ class Coordinator:
         pos = {u: tuple(s["pos"]) for u, s in statuses.items() if s.get("pos")}
         pos.update(self.bases)
         self.drones = [d for d in DRONES if d in statuses]
+        for d in DRONES:                               # a silent drone stays where it was last seen
+            if d in pos:
+                self.seen[d] = pos[d]
+                self.ghosts.pop(d, None)
+            elif d in self.seen:
+                self.ghosts[d] = self.seen[d]
         age = now - statuses.get("rover", {}).get("time", now)
         if "rover" in pos and age <= ROVER_STALE:      # rover speed from successive FRESH reports
             if self.last_rover and now - self.last_rover[0] > 0.2:
@@ -227,9 +286,12 @@ class Coordinator:
             # re-plan only when the chain is about to break: every move is a flight that can open a gap
             if not ok:
                 self._deploy(pos, "chain to base will break soon", now, lead=LOOK_AHEAD / 2)
+        if self.mode == "on" and self.state == "DEPLOYED" and not self.order and not self.moving:
+            self._declutter(pos)
         self._move(pos, now)
         return {"mode": self.mode, "state": self.state, "reason": self.reason, "chains": self.chains,
                 "targets": {d: list(p) for d, p in self.targets.items()}, "on_since": self.on_since,
+                "ghosts": {d: list(p) for d, p in self.ghosts.items()},
                 "routes": self.routes(statuses, pos)}
 
     def routes(self, statuses, pos):

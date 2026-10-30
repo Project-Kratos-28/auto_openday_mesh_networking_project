@@ -206,3 +206,60 @@ def test_new_leader_in_mesh_off_parks_a_drone_left_out():
     st = {"drone_4": {"pos": relay_spot, "time": 0.0}}         # alone: hears nobody else
     out = c.update(st, 0.0)
     assert abs(out["targets"]["drone_4"][0] - START_XY["drone_4"][0]) < 0.01
+
+
+def _settled_four():
+    c = Coordinator(TERRAIN, "on")
+    st = statuses(-10.0)
+    out = _settle(c, st, 0.0)
+    return c, st, out
+
+
+def test_a_relay_is_not_planned_onto_a_dead_drone_hanging_in_the_air():
+    """A killed drone has no physics: it hangs where it died. A relay sent to the same spot would sit inside it."""
+    import math
+    from mesh_protocol.leader import TIGHT_SEP
+    c, st, out = _settled_four()
+    pos = {u: tuple(v["pos"]) for u, v in st.items()}
+    ghost = tuple(out["targets"]["drone_2"])
+    c.ghosts = {"drone_4": ghost}
+    spots = c._spread({"drone_2": ghost}, pos)                # the plan wants a relay exactly where it hangs
+    assert math.dist(spots["drone_2"], ghost) >= TIGHT_SEP
+
+
+def test_a_drone_left_out_of_the_plan_does_not_keep_a_goal_that_another_drone_flies_to():
+    import math
+    from mesh_protocol.leader import MIN_SEP
+    c, st, out = _settled_four()
+    pos = {u: tuple(v["pos"]) for u, v in st.items()}
+    spot = tuple(out["targets"]["drone_1"])
+    c.goal["drone_4"] = spot                                  # its old goal, still the same as drone_1's new spot
+    c._spread({"drone_1": spot}, pos)
+    assert math.dist(c.goal["drone_4"], spot) >= MIN_SEP
+
+
+def test_a_revived_drone_waking_up_on_top_of_a_relay_is_sent_away():
+    import math
+    from mesh_protocol.leader import MIN_SEP
+    c, st, out = _settled_four()
+    before = tuple(out["targets"]["drone_4"])
+    st["drone_4"]["pos"] = list(st["drone_2"]["pos"])         # it wakes up exactly on drone_2
+    for i in range(12):
+        out = c.update(st, 100.0 + i * 0.5)
+    after = tuple(out["targets"]["drone_4"])
+    assert after != before                                    # a drone is only moved by a NEW target
+    assert math.dist(after, st["drone_2"]["pos"]) >= MIN_SEP
+
+
+def test_silent_drones_are_remembered_where_they_hang_and_forgotten_when_they_report_again():
+    c, st, out = _settled_four()
+    spot = tuple(st["drone_3"]["pos"])
+    gone = {u: v for u, v in st.items() if u != "drone_3"}
+    out = c.update(gone, 50.0)
+    assert out["ghosts"] == {"drone_3": list(spot)}
+    assert Coordinator(TERRAIN, "on").ghosts == {}
+    new_leader = Coordinator(TERRAIN, "on")
+    new_leader.adopt(out)                                     # a new leader learns about it from the heartbeat
+    assert new_leader.ghosts == {"drone_3": spot}
+    out = c.update(st, 51.0)                                  # it reports again (revived)
+    assert out["ghosts"] == {}
