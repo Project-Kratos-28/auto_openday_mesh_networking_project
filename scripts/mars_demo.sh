@@ -2,7 +2,7 @@
 # One-command Mars relay-mesh demo for Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic.
 #
 #   ./scripts/mars_demo.sh start                  # Gazebo + mesh + mission + dashboard on the LAN
-#   ./scripts/mars_demo.sh start --tunnel         # also expose it publicly through Cloudflare
+#   ./scripts/mars_demo.sh start --tunnel         # also expose the dashboard AND the phone-upload page publicly (Cloudflare)
 #   ./scripts/mars_demo.sh start --detach         # leave it running in the background
 #   ./scripts/mars_demo.sh stop                   # stop everything this script started
 #   ./scripts/mars_demo.sh status                 # what is running, plus the live mesh state
@@ -17,7 +17,8 @@
 #   --fake               no Gazebo, fake rover
 #   --no-mission         start the mesh without driving
 #   --build              force a colcon build first
-#   --tunnel             open a Cloudflare quick tunnel and print its https URL
+#   --tunnel             open Cloudflare quick tunnels (dashboard + phone upload page) and print their https URLs.
+#                        The phone QR on the dashboard then points at the public upload link (a PHONE_URL you set wins)
 #   --no-tunnel          never use a tunnel (default)
 #   --qr                 open a separate window with a scannable QR code (default on)
 #   --no-qr              do not open the QR window
@@ -37,6 +38,7 @@ MESH=off
 PASSCODE=${MESH_PASSCODE:-kratos123}
 HOST=0.0.0.0
 PORT=8080
+PHONE_PORT=8081     # the phone upload page (same number as PHONE_PORT in mesh_common)
 FAKE=
 MISSION=1
 BUILD=0
@@ -91,7 +93,7 @@ role_ok() {                     # role_ok NAME PID
     case $name in
         launch)    [[ $cmd == *mesh_protocol* || $cmd == *"ros2 launch"* ]] ;;
         dashboard) [[ $cmd == *dashboard* ]] ;;
-        tunnel)    [[ $cmd == *cloudflared* ]] ;;
+        tunnel|phone_tunnel) [[ $cmd == *cloudflared* ]] ;;
         qr)        [[ $cmd == *show_qr.sh* ]] ;;
         mission)   [[ $cmd == *mesh_protocol*mission* ]] ;;
         *)         return 1 ;;
@@ -157,16 +159,16 @@ ensure_cloudflared() {
     return 1
 }
 
-start_tunnel() {
-    local bin url
+start_tunnel() {                # start_tunnel NAME PORT -> prints the public https URL
+    local name=$1 port=$2 bin url
     bin=$(ensure_cloudflared) || return 1
-    spawn tunnel "$LOG_DIR/tunnel.log" "$bin" tunnel --url "http://127.0.0.1:$PORT" --no-autoupdate
+    spawn "$name" "$LOG_DIR/$name.log" "$bin" tunnel --url "http://127.0.0.1:$port" --no-autoupdate
     for _ in $(seq 1 30); do
-        url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG_DIR/tunnel.log" 2>/dev/null | head -1)
+        url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG_DIR/$name.log" 2>/dev/null | head -1)
         [ -n "$url" ] && { echo "$url"; return 0; }
         sleep 1
     done
-    c_bad "tunnel started but no URL appeared: see $LOG_DIR/tunnel.log"
+    c_bad "tunnel started but no URL appeared: see $LOG_DIR/$name.log"
     return 1
 }
 
@@ -359,6 +361,21 @@ cmd_start() {
     fi
     port_busy 7447 && { c_bad "port 7447 busy — an old mesh is still running ('$0 stop')"; return 1; }
     port_busy "$PORT" && { c_bad "port $PORT busy ('$0 stop', or --port)"; return 1; }
+    port_busy "$PHONE_PORT" && { c_bad "port $PHONE_PORT (phone upload page) busy ('$0 stop')"; return 1; }
+
+    # With --tunnel the phone upload page gets its own public link too, so the phone QR on the dashboard
+    # works for phones on any network. It has to exist BEFORE the dashboard starts, because the dashboard
+    # reads PHONE_URL at start-up. A PHONE_URL you set yourself wins.
+    if [ "$TUNNEL" = 1 ] && [ -z "${PHONE_URL:-}" ]; then
+        say "opening Cloudflare quick tunnel for the phone upload page"
+        local phone_pub
+        if phone_pub=$(start_tunnel phone_tunnel "$PHONE_PORT"); then
+            export PHONE_URL="$phone_pub/phone"
+            c_ok "phone page: $PHONE_URL"
+        else
+            c_warn "phone tunnel failed; the phone QR will use the LAN address"
+        fi
+    fi
 
     say "starting dashboard on $HOST:$PORT"
     local dash_args=(ros2 run mesh_dashboard dashboard --host "$HOST" --port "$PORT")
@@ -389,7 +406,7 @@ cmd_start() {
     local public=
     if [ "$TUNNEL" = 1 ]; then
         say "opening Cloudflare quick tunnel"
-        if public=$(start_tunnel); then c_ok "public    : $public"; else c_warn "tunnel failed; LAN only"; fi
+        if public=$(start_tunnel tunnel "$PORT"); then c_ok "public    : $public"; else c_warn "tunnel failed; LAN only"; fi
     fi
 
     if [ "$QR" = 1 ]; then
@@ -439,7 +456,7 @@ cmd_start() {
 
 cmd_stop() {
     local name
-    for name in launch dashboard tunnel qr mission; do stop_one "$name"; done
+    for name in launch dashboard tunnel phone_tunnel qr mission; do stop_one "$name"; done
     rm -f "$RUN_DIR"/*.pid
     if port_busy 7447 || port_busy "$PORT"; then
         c_warn "some ports are still busy: $(ss -tln 2>/dev/null | grep -E ":(7447|$PORT) " | awk '{print $4}' | tr '\n' ' ')"
@@ -450,7 +467,7 @@ cmd_stop() {
 
 cmd_status() {
     local name p
-    for name in launch dashboard tunnel qr mission; do
+    for name in launch dashboard tunnel phone_tunnel qr mission; do
         p=$(pids "$name")
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then printf '%-10s running (pid %s)\n' "$name" "$p"
         else printf '%-10s not running\n' "$name"; fi

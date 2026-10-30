@@ -108,8 +108,10 @@ cd ~/mars_ws
 git fetch --tags --force && git checkout demo-final        # the final version
 colcon build --symlink-install && source install/setup.bash
 ./scripts/mars_demo.sh deps       # once: installs the extra Python packages (prints a sudo command if one is needed)
-./scripts/mars_demo.sh start      # Gazebo + mesh + dashboard + mission + QR window
+./scripts/mars_demo.sh stop       # clear any old run (ports 7447, 8080 and 8081 must be free)
+./scripts/mars_demo.sh start --tunnel   # Gazebo + mesh + dashboard + mission + QR window + public links
 ```
+(`start` without `--tunnel` works only for phones on the same Wi-Fi as the laptop, see [the venue network](#the-venue-network-who-uses-which-link) below.)
 
 Then open **http://localhost:8080**. Stop with `Ctrl-C`, or `./scripts/mars_demo.sh stop` from another terminal. Check what is running with `./scripts/mars_demo.sh status`.
 
@@ -117,7 +119,7 @@ What `start` does, in order: builds if needed, checks the packages, starts the d
 
 | Option for `start` | Meaning |
 |---|---|
-| `--tunnel` | open a public Cloudflare https link, so phones on any network can reach the page |
+| `--tunnel` | open **two** public Cloudflare https links: one for the dashboard (viewers) and one for the phone upload page (the QR on the dashboard then points at it, unless you set `PHONE_URL` yourself). Needs internet on the laptop |
 | `--mesh on` | start with the mesh already ON (default: off) |
 | `--passcode TEXT` | controls passcode (default: `$MESH_PASSCODE` or the built-in one; `""` unlocks everything) |
 | `--host ADDR` / `--port N` | dashboard address (default `0.0.0.0` = whole LAN) and port (default 8080) |
@@ -128,6 +130,24 @@ What `start` does, in order: builds if needed, checks the packages, starts the d
 | `--detach` | leave it running in the background |
 
 **Passcode:** watching the dashboard is public. The mesh toggle, the failure controls and TAKE PHOTO need the passcode, which a masked box asks for once per browser tab. Default: `kratos123`. Change it with `MESH_PASSCODE=... ./scripts/mars_demo.sh start`. It travels in clear text over plain http, so it keeps visitors out but is not real security.
+
+### The venue network: who uses which link
+
+Campus Wi-Fi often stops devices from talking to each other, so a link to the laptop's LAN address may not open on a visitor's phone. That is why the demo uses public Cloudflare links.
+
+| Who | Uses | Link |
+|---|---|---|
+| **Demonstrator** (the laptop owner) | the dashboard on the laptop, with the controls | `http://localhost:8080` and the passcode |
+| **Viewers who just watch** | the QR window the script opens, or the public dashboard link it prints | `https://….trycloudflare.com`: view only, the controls need the passcode |
+| **Visitors who send a photo** | the QR in the dashboard's "Send a photo from your phone" panel | a second public link `https://….trycloudflare.com/phone` |
+
+- `./scripts/mars_demo.sh start --tunnel` creates both public links by itself and prints them. The phone link is created **first**, because the dashboard reads it at start-up.
+- Put the laptop on a **phone hotspot or other internet connection** you trust. Cloudflare tunnels need outbound internet, and a restrictive campus network may block them. Try it on the venue network before the audience arrives.
+- **Both public addresses change on every run.** Start the demo before people arrive, and show them the fresh QR.
+- `cloudflared` is stored in `/tmp/mars_demo/cloudflared/`, which a reboot wipes. After a reboot, run `./scripts/mars_demo.sh deps --tunnel` once while you have internet.
+- If a tunnel cannot start, the script says so and carries on: the dashboard QR window then shows a LAN link, and the phone QR falls back to the LAN address (it only works for phones on the same Wi-Fi as the laptop, for example the same hotspot).
+- `./scripts/mars_demo.sh stop` closes both tunnels.
+- Anyone with the public links can open them. The dashboard controls are protected by the passcode, the upload page is not (see [known limits](#17-known-limits)).
 
 **On a VM** (virtual GPU, Gazebo's default `ogre2` renderer fails): use `./scripts/phone_tunnel.sh`. It starts Gazebo with the classic `ogre` renderer plus a Cloudflare tunnel for the phone page, then run the mission yourself with `ros2 run mesh_protocol mission`. Details: [`docs/OPEN_DAY.md`](docs/OPEN_DAY.md).
 
@@ -304,7 +324,7 @@ The dashboard (or `mesh_ctl`) asks the base, which sends `MESH_CMD` to the leade
 - **Live feed:** the rover turns the newest frame into a JPEG (q55) every 0.5 s and sends it as a `FEED` bundle (lifetime 1 s, bulk). The base publishes `mesh/base/feed`; the dashboard marks frames older than 2 s as frozen.
 - **Photo (button or arrival):** the base sends `PHOTO_REQ`; the rover grabs a real frame (PNG) and sends it as `PHOTO_CHUNK`s (1 KB, base64, sha256 of the whole file). The base reassembles it, and chunks of an older photo are ignored.
 - **Phone photo:** the QR opens `/phone` on a separate small server (port 8081; only `/phone` and `/upload`, images only, 15 MB max). The dashboard shrinks the picture (max 480 px, JPEG q70) and publishes `mesh/rover/phone_photo`; the rover sends it to the base over the mesh.
-- The QR encodes `PHONE_URL`, else the laptop's LAN address (only works for phones on the same Wi-Fi). With a tunnel it encodes the public https address.
+- The QR on the dashboard encodes `PHONE_URL`, else the laptop's LAN address (only works for phones on the same Wi-Fi). `./scripts/mars_demo.sh start --tunnel` sets `PHONE_URL` itself to a public Cloudflare address for the upload page, so the QR works from any network. `./scripts/phone_tunnel.sh` (the VM version) does the same.
 
 ### Zenoh keys
 | Key | From → To | Contents |
@@ -416,7 +436,7 @@ Server details (`mesh_dashboard/server.py`): `GET /` page, `GET /events` server-
 | **`mars_sim/models/`** | SDF models: `primary_rover` (with camera), `relay_drone`, `base_station`, `mars_crater`. |
 | **`mars_sim/launch/sim.launch.py`** | Starts Gazebo with the crater world and registers the model path. |
 | **`mesh_protocol/launch/mesh.launch.py`** | Starts the link model, radio channel, injector and the six mesh nodes (and optionally the dashboard, the mission, Gazebo). |
-| **`scripts/mars_demo.sh`** | The one-command demo runner: preflight checks, starts and records every process, LAN / tunnel links, QR window, `stop` and `status`. |
+| **`scripts/mars_demo.sh`** | The one-command demo runner: preflight checks, starts and records every process, LAN / Cloudflare links (dashboard and phone page), QR window, `stop` and `status`. |
 
 ## 12. Design decisions and why
 
@@ -548,7 +568,7 @@ Be honest with visitors about these. The first two are why the self-test prints 
 3. **A photo right after a drone kill may not finish** until the relay chain has re-formed. Do the failure demo last and give it a few seconds.
 4. **The failure-injection module is a stand-in.** Drop and corrupt work; scripted failures and delays are not built.
 5. **Drones are not real flying robots.** They glide with `set_pose`: no flight physics, wind or battery.
-6. **The phone upload page has no passcode.** Anyone with the QR link can upload an image (images only, 15 MB max). Don't post the link publicly. The tunnel address changes on every run.
+6. **The phone upload page has no passcode.** Anyone with the QR link can upload an image (images only, 15 MB max). Don't post the link publicly: with `--tunnel` it is reachable from the internet while the demo runs. The tunnel addresses change on every run.
 7. **Weak passcode protection.** It is sent in clear text over http; use a tunnel (TLS) on an untrusted network.
 8. **Run it once on the demo machine before open day.** The Gazebo window, camera, QR and tunnel are not covered by automated tests.
 
@@ -603,7 +623,9 @@ Be honest with visitors about these. The first two are why the self-test prints 
 | Dashboard on another laptop sees nothing | `mars_demo.sh start` listens on the whole LAN; the manual `ros2 run mesh_dashboard dashboard` uses `127.0.0.1` unless you pass `--host 0.0.0.0` |
 | Gazebo window black / crashes (VM) | Use `./scripts/phone_tunnel.sh` (classic `ogre` renderer). On a real laptop: `sudo ubuntu-drivers install`, reboot |
 | QR page says "pip install segno", or no camera / photo upload | `./scripts/mars_demo.sh deps` (installs `segno` and `Pillow`) |
-| Phone can't open the QR link | The phone must be on the same Wi-Fi, or start with `--tunnel`. On a NAT'd VM only the tunnel works |
+| Phone can't open a QR link | Start with `./scripts/mars_demo.sh start --tunnel` and check the script printed `phone page: https://…`. Without `--tunnel` the phone must be on the same Wi-Fi (campus Wi-Fi often blocks that). On a NAT'd VM only the tunnel works |
+| `--tunnel` prints "tunnel failed" or no URL | The laptop has no internet, or the network blocks Cloudflare. Use a phone hotspot. After a reboot run `./scripts/mars_demo.sh deps --tunnel` (cloudflared lives in `/tmp`). Check `/tmp/mars_demo/logs/tunnel.log` and `phone_tunnel.log` |
+| `port 8081 (phone upload page) busy` | An old run is still going: `./scripts/mars_demo.sh stop` |
 | Controls ask for a passcode | See [section 4](#4-quick-start-demo-day). Cancel leaves them locked; a wrong one asks again |
 | Self-test fails | Read the `FAIL` lines and `/tmp/mesh_selftest.log`. `[KNOWN ISSUE]` lines do not count as failures |
 | `SSL certificate problem` on campus Wi-Fi | Use a phone hotspot |
@@ -622,7 +644,7 @@ More in [`ERRORS.md`](ERRORS.md).
 - [x] Mission: the base drives the rover to the target over the mesh; re-arms after a world reset
 - [x] Web dashboard: map, routes, held bundles, delivery, late odometry, events, failure controls
 - [x] Rover camera: live feed, photo on arrival and by button, sha256 check, phone QR upload
-- [x] Passcode-protected controls, one-command demo runner, Cloudflare tunnel for the phone page
+- [x] Passcode-protected controls, one-command demo runner, Cloudflare tunnels for the dashboard and the phone upload page
 - [x] v4 Step 1 (one base, science target, 20 m radio) and Step A (kill / revive fix, review fixes)
 - [x] Everything merged into `main` and tagged `demo-final`
 
