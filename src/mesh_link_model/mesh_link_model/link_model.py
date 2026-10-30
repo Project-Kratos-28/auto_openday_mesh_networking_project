@@ -16,7 +16,7 @@ import threading
 import time
 
 from mesh_common import (UNITS, GZ_NAMES, WORLD, START_XY, DRONE_HOVER, RADIO_RANGE,
-                         LOS_CLEARANCE, KEY_LINKS, KEY_POSITIONS, KEY_FAKE_POSE,
+                         LOS_CLEARANCE, KEY_LINKS, KEY_POSITIONS, KEY_RESET, KEY_FAKE_POSE,
                          KEY_FAKE_CMD_VEL, antenna_height, open_session)
 from mesh_link_model.terrain import Terrain
 
@@ -38,7 +38,11 @@ def start_gazebo_poses(state, lock, world):
             u = to_unit.get(p.name)
             if u and u not in found:               # first entry with that name = the model itself
                 found[u] = ((p.position.x, p.position.y, p.position.z), yaw_of(p.orientation))
+        t = msg.header.stamp.sec + msg.header.stamp.nsec * 1e-9      # simulation time
         with lock:
+            if t < state.get("sim_t", 0.0) - 0.5:                    # it went BACKWARDS: "Restart simulation"
+                state["reset"] = True
+            state["sim_t"] = t
             for u, (xyz, yaw) in found.items():
                 state["pos"][u], state["yaw"][u] = xyz, yaw
 
@@ -124,6 +128,7 @@ def main():
 
     pub_links = session.declare_publisher(KEY_LINKS)
     pub_pos = session.declare_publisher(KEY_POSITIONS)
+    pub_reset = session.declare_publisher(KEY_RESET)
     last_state, t_start, warned = {}, time.time(), False
     dt, next_pub, last = 0.05, 0.0, time.time()
     try:
@@ -139,6 +144,12 @@ def main():
                     state["pos"]["rover"] = (x, y, terrain.ground(x, y))
                     state["yaw"]["rover"] = yaw
             last = now
+            with lock:
+                restarted = state.pop("reset", False)
+            if restarted:                              # tell everyone: the run before is over
+                pub_reset.put(json.dumps({"n": int(now * 1000), "time": now}))
+                last_state.clear()
+                print("[link_model] simulation restarted: telling every unit to start again from scratch", flush=True)
             if now >= next_pub:
                 next_pub = now + 1.0 / args.rate
                 with lock:

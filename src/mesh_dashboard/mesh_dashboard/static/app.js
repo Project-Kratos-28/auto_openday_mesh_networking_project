@@ -149,7 +149,10 @@ function drawPanels(s) {
   const fd = s.feed;
   if (fd) {
     const age = s.now - fd.t;                    // a frozen picture is shown as such, never as live
-    $("feedImg").src = "data:image/jpeg;base64," + fd.jpg_b64;
+    if ($("feedImg").dataset.t !== String(fd.t)) {           // only a new frame is decoded again
+      $("feedImg").src = "data:image/jpeg;base64," + fd.jpg_b64;
+      $("feedImg").dataset.t = String(fd.t);
+    }
     $("feedImg").hidden = false;
     $("feedImg").style.opacity = age < 2 ? 1 : 0.35;
     $("feedText").textContent = age < 2 ? "live" : `link down, frozen ${age.toFixed(0)} s ago`;
@@ -169,6 +172,8 @@ function drawPanels(s) {
     }
   }
 
+  renderUplink(s);
+
   const f = s.failure || {};
   syncSlider("drop", f.drop_probability), syncSlider("corrupt", f.corrupt_probability);
   const sel = $("unit");
@@ -182,6 +187,41 @@ function syncSlider(id, v) {
   $(id + "Out").textContent = Math.round(v * 100) + " %";
 }
 
+// The rover's screen: the picture mission control sends it. With no link the base holds the chunks, so the
+// picture only forms (from the top down) as chunks get through, and it stays unfinished while the link is down.
+function renderUplink(s) {
+  const up = s.uplink, us = s.uplink_sent, img = $("upImg"), txt = $("upText");
+  const pending = us && (!up || us.t > up.t);
+  let state = "";
+  if (pending) {
+    $("upBar").style.width = "0%";
+    img.hidden = true; img.dataset.key = "";
+    txt.textContent = `Sent from the base (${us.chunks} chunks). The rover has received nothing yet: waiting for a link…`;
+  } else if (up && up.total) {
+    $("upBar").style.width = (100 * up.received) / up.total + "%";
+    if (up.done) {
+      if (up.image_b64 && img.dataset.key !== "done" + up.photo_id) {
+        img.src = `data:image/jpeg;base64,${up.image_b64}`;
+        img.dataset.key = "done" + up.photo_id; img.hidden = false;
+      }
+      state = up.ok ? "ok" : "bad";
+      txt.textContent = `Received by the rover ✓ ${up.total} chunks · sha256 ${up.ok ? "OK ✓" : "MISMATCH ✕"}`;
+    } else {
+      const key = `p${up.photo_id}-${up.received}`;
+      if (up.partial_b64 && img.dataset.key !== key) {
+        img.src = `data:image/jpeg;base64,${up.partial_b64}`;
+        img.dataset.key = key; img.hidden = false;
+      }
+      const stalled = s.now - up.t > 3;
+      state = stalled ? "bad" : "";
+      txt.textContent = `Receiving: ${up.received} / ${up.total} chunks` + (stalled ? " · link lost, the rest is waiting at the base…" : "");
+    }
+  }
+  $("upScreen").classList.toggle("forming", !(up && up.done && !pending));     // static until the picture is complete
+  txt.className = ("sub " + state).trim();
+}
+
+let seenEpoch = null;
 let lastPhotoId = null, ignoreId = null;   // see the TAKE PHOTO button
 
 function addLog(e) {
@@ -210,7 +250,9 @@ function addLog(e) {
   const what = { expired: `expired ${e.type} #${e.seq} (${e.where})`, retransmit: `resend ${e.type} #${e.seq} → ${e.to}`,
     election: `election: term ${e.term}`, leader: `now LEADER (term ${e.term})`, killed: "KILLED", revived: "revived",
     route_change: "route table changed", dropped_full: `store full, dropped ${e.type} #${e.seq}`,
-    photo: `photo ${e.received}/${e.total}` }[e.event] || e.event;
+    photo: `photo ${e.received}/${e.total}`,
+    uplink_sent: `message from base: ${e.total} chunks queued`,
+    uplink: `rover received ${e.received}/${e.total} of the message${e.ok === true ? " ✓" : ""}` }[e.event] || e.event;
   li.innerHTML = "<time></time><b></b> <span></span>";
   li.children[0].textContent = t;
   li.children[1].textContent = short(e.unit);
@@ -282,7 +324,10 @@ $("reviveBtn").onclick = () => post("/api/failure", { revive: $("unit").value })
 function connect() {
   const es = new EventSource("/events");
   es.addEventListener("snapshot", (ev) => {
-    snap = JSON.parse(ev.data);
+    const s = JSON.parse(ev.data);
+    if (seenEpoch === null) seenEpoch = s.epoch;             // a new epoch = the simulation was restarted: start the page fresh
+    else if (s.epoch !== seenEpoch) { location.reload(); return; }
+    snap = s;
     lastMsg = Date.now();
     drawPanels(snap); drawMap(snap); drawOdom(snap);
   });

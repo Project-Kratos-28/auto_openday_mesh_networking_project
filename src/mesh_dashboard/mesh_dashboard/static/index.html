@@ -76,10 +76,14 @@
   </section>
 
   <section class="panel qr">
-    <h2>Send a photo from your phone</h2>
+    <h2>Message from base → rover</h2>
     <img id="qrImg" src="/qr.svg" alt="QR code" onerror="this.hidden = true">
-    <div class="sub">Scan, take a picture: it goes phone → rover → drones → base.</div>
+    <div class="sub">Scan with your phone and send a picture as mission control: base → drones → rover.</div>
     <div class="sub" id="qrText"></div>
+    <h2 class="spaced">Rover screen</h2>
+    <div class="screen forming" id="upScreen"><img id="upImg" alt="Picture received by the rover" hidden></div>
+    <div class="progress"><div id="upBar"></div></div>
+    <div class="sub" id="upText">no message yet</div>
   </section>
 
   <section class="panel fail">

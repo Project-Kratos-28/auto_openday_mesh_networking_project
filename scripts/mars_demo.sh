@@ -39,6 +39,7 @@ PASSCODE=${MESH_PASSCODE:-kratos123}
 HOST=0.0.0.0
 PORT=8080
 PHONE_PORT=8081     # the phone upload page (same number as PHONE_PORT in mesh_common)
+ROLES=(launch dashboard tunnel phone_tunnel qr mission)     # every process we start (pid files in $RUN_DIR)
 FAKE=
 MISSION=1
 BUILD=0
@@ -456,7 +457,7 @@ cmd_start() {
 
 cmd_stop() {
     local name
-    for name in launch dashboard tunnel phone_tunnel qr mission; do stop_one "$name"; done
+    for name in "${ROLES[@]}"; do stop_one "$name"; done
     rm -f "$RUN_DIR"/*.pid
     if port_busy 7447 || port_busy "$PORT"; then
         c_warn "some ports are still busy: $(ss -tln 2>/dev/null | grep -E ":(7447|$PORT) " | awk '{print $4}' | tr '\n' ' ')"
@@ -467,7 +468,7 @@ cmd_stop() {
 
 cmd_status() {
     local name p
-    for name in launch dashboard tunnel phone_tunnel qr mission; do
+    for name in "${ROLES[@]}"; do
         p=$(pids "$name")
         if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then printf '%-10s running (pid %s)\n' "$name" "$p"
         else printf '%-10s not running\n' "$name"; fi

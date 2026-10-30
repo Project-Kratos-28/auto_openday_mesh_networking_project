@@ -74,3 +74,16 @@ def test_late_chunk_of_older_photo_does_not_wipe_newer():
     for p in new[1:]:
         out = r.add(p)
     assert out["done"] and out["ok"] and out["photo_id"] == 2
+
+
+def test_partial_reassembler_gives_the_gap_free_start():
+    import base64
+    from mesh_protocol.photo import Reassembler, chunks
+    data = bytes(range(256)) * 12
+    parts = chunks(data, 1)
+    r = Reassembler(partial=True)
+    assert base64.b64decode(r.add(parts[0])["partial_b64"]) == data[:1024]
+    assert base64.b64decode(r.add(parts[2])["partial_b64"]) == data[:1024]       # chunk 1 missing: still just the start
+    done = r.add(parts[1])
+    assert done["done"] and done["ok"] and "partial_b64" not in done
+    assert "partial_b64" not in Reassembler().add(parts[0])                      # off by default

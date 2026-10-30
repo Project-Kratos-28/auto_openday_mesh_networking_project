@@ -9,6 +9,8 @@ import os
 import threading
 import time
 
+from mesh_common import CHUNK_BYTES
+
 
 def photo_bytes():
     """The rover's 'camera': a fixed picture shipped with the package (installed share, else source)."""
@@ -52,7 +54,7 @@ class Camera:
         return out.getvalue()
 
 
-def chunks(data, photo_id, size=1024):
+def chunks(data, photo_id, size=CHUNK_BYTES):
     """bytes -> list of PHOTO_CHUNK payloads."""
     total = max(1, -(-len(data) // size))
     digest = hashlib.sha256(data).hexdigest()
@@ -61,8 +63,26 @@ def chunks(data, photo_id, size=1024):
 
 
 class Reassembler:
-    def __init__(self):
-        self.photo_id, self.parts, self.result = None, {}, None
+    def __init__(self, partial=False):
+        """partial=True: unfinished progress also carries `partial_b64`, the gap-free start of the file (a
+        baseline JPEG cut short still shows its top part)."""
+        self.partial = partial
+        self._start(None)
+
+    def _start(self, photo_id):
+        self.photo_id, self.parts, self.result = photo_id, {}, None
+        self._prefix, self._next, self._prefix_b64 = bytearray(), 0, None      # gap-free start of the file
+
+    def _grow_prefix(self):
+        """Extend the gap-free start with the chunks that now follow it (each chunk is decoded once)."""
+        grown = False
+        while self._next in self.parts:
+            self._prefix += base64.b64decode(self.parts[self._next])
+            self._next += 1
+            grown = True
+        if grown:
+            self._prefix_b64 = base64.b64encode(bytes(self._prefix)).decode()
+        return self._prefix_b64
 
     def add(self, p):
         """Add one chunk payload. Returns progress; when done, also ok (sha256 match) and the image."""
@@ -71,7 +91,7 @@ class Reassembler:
             return self.result or {"photo_id": self.photo_id, "received": len(self.parts),
                                    "total": p["total"], "done": False}   # late chunk of an older photo
         if pid != self.photo_id:
-            self.photo_id, self.parts, self.result = pid, {}, None
+            self._start(pid)
         if self.result is not None:
             return self.result
         self.parts[p["index"]] = p["data"]
@@ -84,4 +104,6 @@ class Reassembler:
             ok = hashlib.sha256(data).hexdigest() == p["sha256"]
             out.update(done=True, ok=ok, image_b64=base64.b64encode(data).decode() if ok else None)
             self.result = out
+        elif self.partial:
+            out["partial_b64"] = self._grow_prefix()
         return out

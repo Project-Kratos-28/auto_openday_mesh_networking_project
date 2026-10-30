@@ -26,7 +26,7 @@ os.environ["MESH_HUB"] = PORT                          # must be set before mesh
 
 from mesh_common import (UNITS, DRONES, START_XY, ROVER_SPEED, CRATER_RADIUS, DRONE_SPEED, KEY_POSITIONS, KEY_ACKS, KEY_ODOM, KEY_COORD_STATE,  # noqa: E402
                          KEY_COORD_CMD, KEY_MISSION, KEY_FAKE_POSE, KEY_FAKE_CMD_VEL, KEY_FAIL_CONTROL,
-                         KEY_PHOTO, KEY_PHOTO_CMD,
+                         KEY_PHOTO, KEY_PHOTO_CMD, KEY_RESET,
                          open_session)
 
 MAX_GAP = 1.5      # s: odometry is sent every 0.5 s, so a gap above this means the flow broke
@@ -341,6 +341,17 @@ def main():
         ok_off = dash_post("/api/mesh", {"on": False}) == 200 and wait_for(lambda: coord("mode") == "off", 8)
         ok_on = dash_post("/api/mesh", {"on": True}) == 200 and wait_for(lambda: coord("mode") == "on", 8)
         check("dashboard toggle switched the mesh OFF and ON", ok_off and ok_on)
+
+        print("\nTest 7: simulation restarted (Gazebo's 'Restart simulation')")
+        wait_for(lambda: coord("mode") == "on", 8)
+        s.put(KEY_RESET, json.dumps({"n": int(time.time() * 1000)}))
+        check("the mesh is OFF again", wait_for(lambda: coord("mode") == "off" and coord("state") == "STANDBY", 10))
+
+        def all_parked():
+            with lock:
+                p = st["pos"][-1][1] if st["pos"] else {}
+            return all(p.get(d) and math.dist(p[d][:2], START_XY[d]) < 3.0 for d in DRONES)
+        check("every drone is back at its parking spot", wait_for(all_parked, 25))
         s.close()
     finally:
         for p in procs:

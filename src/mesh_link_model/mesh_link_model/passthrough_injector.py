@@ -13,7 +13,7 @@ import random
 import threading
 import time
 
-from mesh_common import UNITS, KEY_FAIL_CONTROL, KEY_FAIL_EVENTS, key_rx, open_session
+from mesh_common import UNITS, KEY_FAIL_CONTROL, KEY_FAIL_EVENTS, KEY_RESET, key_rx, open_session
 
 
 def flip_bits(data, n):
@@ -74,8 +74,14 @@ def main():
         except Exception as e:
             print(f"[injector] bad control message: {e}", flush=True)
 
+    def on_reset(_):                                   # simulation restarted: no leftover packet loss / corruption
+        with lock:
+            cfg.update(corrupt_probability=0.0, drop_probability=0.0)
+        print("[injector] simulation restarted: packet loss and corruption back to 0", flush=True)
+
     subs = [session.declare_subscriber("mesh/*/air", on_air),          # noqa: F841 (keep alive)
-            session.declare_subscriber(KEY_FAIL_CONTROL, on_control)]
+            session.declare_subscriber(KEY_FAIL_CONTROL, on_control),
+            session.declare_subscriber(KEY_RESET, on_reset)]
     print(f"[injector] stand-in running, settings {cfg}", flush=True)
     try:
         while True:

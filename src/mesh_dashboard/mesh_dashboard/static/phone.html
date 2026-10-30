@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Send a photo to the rover</title>
+<title>Message to the rover</title>
 <style>
   body { font-family: system-ui, sans-serif; background: #0b1220; color: #e6edf7; margin: 0; padding: 24px; text-align: center; }
   h1 { font-size: 22px; } p { color: #9fb0c8; }
@@ -9,18 +9,18 @@
   input { display: none; } #msg { font-size: 18px; min-height: 28px; }
 </style></head><body>
 <h1>Mars rover relay mesh</h1>
-<p>Take a picture. It travels from the rover, hop by hop over the drone relays, to mission control.</p>
-<label>Take a photo<input id="pic" type="file" accept="image/*" capture="environment"></label>
+<p>You are mission control. Send a picture to the rover: it travels from the base, hop by hop over the drone relays, and appears on the rover's screen. With no link it has to wait, so watch the big screen.</p>
+<label>Take a selfie<input id="pic" type="file" accept="image/*" capture="user"></label>
 <div id="msg"></div>
 <script>
 document.getElementById("pic").onchange = async (ev) => {
   const f = ev.target.files[0], msg = document.getElementById("msg");
   if (!f) return;
-  msg.textContent = "Sending to the rover...";
+  msg.textContent = "Sending to mission control...";
   try {
     const r = await fetch("/upload", { method: "POST", headers: { "Content-Type": f.type || "image/jpeg" }, body: f });
-    msg.textContent = r.ok ? "Sent! Watch the big screen." : "Could not send (" + (await r.text()) + ")";
-  } catch (e) { msg.textContent = "No connection to the rover."; }
+    msg.textContent = r.ok ? "Sent to the base! Watch the rover's screen on the big display." : "Could not send (" + (await r.text()) + ")";
+  } catch (e) { msg.textContent = "No connection to mission control."; }
   ev.target.value = "";
 };
 </script></body></html>

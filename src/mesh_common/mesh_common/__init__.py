@@ -81,7 +81,10 @@ KEY_EVENTS = "mesh/events"                     # every node -> dashboard: one no
 KEY_PHOTO = "mesh/base/photo"                  # base -> dashboard: photo progress / image
 KEY_FEED = "mesh/base/feed"                    # base -> dashboard: newest live camera frame (JPEG)
 FEED_PERIOD = 0.5                              # s between live frames (2 fps)
-KEY_PHONE_PHOTO = "mesh/rover/phone_photo"        # dashboard -> rover: a phone picture to send to the base
+KEY_RESET = "mesh/reset"                          # link model -> all: the simulation was restarted ({"n": epoch})
+KEY_UPLINK = "mesh/base/uplink_photo"             # dashboard -> base: a picture to send to the rover
+KEY_UPLINK_RX = "mesh/rover/uplink"               # rover -> dashboard: what the rover has received so far
+CHUNK_BYTES = 1024                             # a photo travels in pieces of this size
 PHONE_PORT = 8081                              # phones upload here (only /phone and /upload are served)
 KEY_PHOTO_CMD = "mesh/base/photo_cmd"          # dashboard -> base: take a photo
 

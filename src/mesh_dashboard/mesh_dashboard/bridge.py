@@ -3,12 +3,13 @@ snapshot() / events() to draw, and set_mesh / set_failure / take_photo for the c
 """
 import io
 import json
+import math
 import threading
 import time
 from collections import deque
 
 from mesh_common import (KEY_COORD_STATE, KEY_COORD_CMD, KEY_ACKS, KEY_ODOM, KEY_MISSION, KEY_LINKS,
-                         KEY_POSITIONS, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, KEY_PHONE_PHOTO, KEY_FEED, TARGET_XY,
+                         KEY_POSITIONS, KEY_EVENTS, KEY_FAIL_CONTROL, KEY_PHOTO, KEY_PHOTO_CMD, KEY_UPLINK, KEY_UPLINK_RX, KEY_RESET, KEY_FEED, CHUNK_BYTES, TARGET_XY,
                          open_session)
 
 TYPES_SHOWN = ("COMMAND", "TELEMETRY", "PHOTO_CHUNK")
@@ -41,12 +42,8 @@ def terrain_profile():
 class Bridge:
     def __init__(self, session=None):
         self._lock = threading.Lock()
-        self._started = time.time()
-        self._d = {"coord": None, "ack": None, "ack_t": 0.0, "odom": None, "odom_t": 0.0,
-                   "mission": None, "links": [], "positions": {}, "stats": {}, "photo": None, "feed": None,
-                   "failure": {"drop_probability": 0.0, "corrupt_probability": 0.0}}
-        self._odom = deque(maxlen=ODOM_KEEP)
-        self._events, self._n_events = deque(maxlen=EVENTS_KEEP), 0
+        self._clear()
+        self._epoch, self._n_events = 0, 0              # epoch: bumped by every simulation restart (the page reloads)
         self._terrain = terrain_profile()
         self._s = session or open_session()
         S = self._s
@@ -58,10 +55,32 @@ class Bridge:
                       S.declare_subscriber(KEY_POSITIONS, self._on_pos),
                       S.declare_subscriber(KEY_PHOTO, self._set("photo")),
                       S.declare_subscriber(KEY_FEED, self._set("feed")),
+                      S.declare_subscriber(KEY_UPLINK_RX, self._set("uplink")),
+                      S.declare_subscriber(KEY_RESET, self._on_reset),
                       S.declare_subscriber(KEY_EVENTS, self._on_event),
                       S.declare_subscriber("mesh/stats/*", self._on_stats)]
 
+    @staticmethod
+    def _fresh():
+        return {"coord": None, "ack": None, "ack_t": 0.0, "odom": None, "odom_t": 0.0, "mission": None,
+                "links": [], "positions": {}, "stats": {}, "photo": None, "feed": None, "uplink": None,
+                "uplink_sent": None, "failure": {"drop_probability": 0.0, "corrupt_probability": 0.0}}
+
+    def _clear(self):
+        """Forget the whole run (graphs, log, pictures, counters). _n_events keeps counting, so open event
+        streams stay in step."""
+        self._d = self._fresh()
+        self._odom = deque(maxlen=ODOM_KEEP)
+        self._events = deque(maxlen=EVENTS_KEEP)
+        self._started = time.time()
+
     # ---------------------------------------------------------- incoming
+    def _on_reset(self, _sample):
+        """The simulation was restarted: start the dashboard fresh."""
+        with self._lock:
+            self._clear()
+            self._epoch += 1
+
     def _set(self, key):
         def cb(sample):
             try:
@@ -126,11 +145,12 @@ class Bridge:
             stats = {u: dict(s) for u, s in d["stats"].items()}
             odom = sorted(self._odom, key=lambda o: o["t"])     # late samples go back in place
         return {
-            "now": now, "started": self._started,
+            "now": now, "started": self._started, "epoch": self._epoch,
             "coord": d["coord"], "positions": d["positions"], "links": d["links"], "stats": stats,
             "last_ack": d["ack"], "ack_age": now - d["ack_t"] if d["ack"] else None,
             "last_odom": d["odom"], "odom_age": now - d["odom_t"] if d["odom"] else None,
             "odom": odom, "delivery": delivery(stats), "mission": d["mission"], "photo": d["photo"], "feed": d["feed"],
+            "uplink": d["uplink"], "uplink_sent": d["uplink_sent"],
             "failure": d["failure"], "terrain": self._terrain, "target": list(TARGET_XY),
         }
 
@@ -150,7 +170,8 @@ class Bridge:
         self._s.put(KEY_FAIL_CONTROL, json.dumps(cfg))
 
     def phone_photo(self, data):
-        """A phone picture (any size) -> small JPEG -> the rover. ValueError if it is not an image."""
+        """A phone picture (any size) -> small baseline JPEG -> the base, which sends it to the rover over the
+        mesh (a message from mission control). ValueError if it is not an image."""
         from PIL import Image, ImageOps, UnidentifiedImageError
         try:
             img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
@@ -158,8 +179,11 @@ class Bridge:
             raise ValueError("not an image") from e
         img.thumbnail((480, 480))                   # ~30 KB: about 30 chunks over the mesh
         out = io.BytesIO()
-        img.save(out, "JPEG", quality=70)
-        self._s.put(KEY_PHONE_PHOTO, out.getvalue())
+        img.save(out, "JPEG", quality=70, progressive=False)       # baseline: a cut-short file still shows its top part
+        jpg = out.getvalue()
+        with self._lock:
+            self._d["uplink_sent"] = {"t": time.time(), "bytes": len(jpg), "chunks": math.ceil(len(jpg) / CHUNK_BYTES)}
+        self._s.put(KEY_UPLINK, jpg)
 
     def take_photo(self):
         self._s.put(KEY_PHOTO_CMD, json.dumps({"time": time.time()}))

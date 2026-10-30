@@ -98,6 +98,23 @@ def make_phone_server(bridge, port=PHONE_PORT):
     return srv
 
 
+# Big base64 pictures in the snapshot: (field, blob, what tells one picture from the next)
+_PICTURES = (("photo", "image_b64", "photo_id"), ("uplink", "image_b64", "photo_id"))
+
+
+def trim_repeats(snap, sent):
+    """A finished picture is sent to a page once: afterwards the page keeps it (it only draws a picture when
+    its id changes), so the same base64 is not repeated 4 times a second. `sent` is one page's memory."""
+    for key, blob, ident in _PICTURES:
+        d = snap.get(key)
+        if d and d.get(blob):
+            if sent.get(key) == d.get(ident):
+                snap[key] = {k: v for k, v in d.items() if k != blob}
+            else:
+                sent[key] = d.get(ident)
+    return snap
+
+
 def make_server(bridge, host="127.0.0.1", port=8080, passcode=PASSCODE):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):          # keep the terminal quiet
@@ -138,12 +155,12 @@ def make_server(bridge, host="127.0.0.1", port=8080, passcode=PASSCODE):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            seen = 0
+            seen, sent = 0, {}
             try:
                 while True:
                     log, seen = bridge.events(seen)
                     msg = "".join(f"event: log\ndata: {json.dumps(e)}\n\n" for e in log)
-                    msg = f"event: snapshot\ndata: {json.dumps(bridge.snapshot())}\n\n" + msg
+                    msg = f"event: snapshot\ndata: {json.dumps(trim_repeats(bridge.snapshot(), sent))}\n\n" + msg
                     self.wfile.write(msg.encode())
                     self.wfile.flush()
                     time.sleep(PERIOD)

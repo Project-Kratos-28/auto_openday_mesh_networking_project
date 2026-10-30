@@ -214,6 +214,11 @@ class _Sample:
         self.payload = type("P", (), {"to_bytes": lambda s: json.dumps(m).encode()})()
 
 
+class _RawSample:
+    def __init__(self, data):
+        self.payload = type("P", (), {"to_bytes": lambda s: data})()
+
+
 def test_revived_leader_forgets_old_role_and_mode():
     n, _ = node("drone_1")
     n.election.is_leader, n.election.term, n.election.leader = True, 3, "drone_1"
@@ -258,3 +263,101 @@ def test_base_asks_again_when_the_leader_it_follows_is_in_another_mode():
     assert n.want_mode is None                          # a leader shows ON: stop asking
     n._apply_leader({"mode": "off", "routes": {}, "targets": {}}, time.time())
     assert n.want_mode == "on"                          # another leader (after a split) is OFF: ask again
+
+
+def _chunk_bundles(data, photo_id, src="base", dst="rover"):
+    from mesh_protocol.photo import chunks
+    return [decode(encode(make_packet(src, dst, 1000 + c["index"], "PHOTO_CHUNK", c, next_hop=dst)))[0]
+            for c in chunks(data, photo_id)]
+
+
+def test_base_sends_an_uplink_picture_to_the_rover_as_chunks():
+    n, _ = node("base")
+    sent = []
+    n.originate = lambda dst, ptype, payload, *a, **k: sent.append((dst, ptype, payload))
+
+    n.on_uplink_photo(_RawSample(b"J" * 3000))
+    n.on_uplink_photo(_RawSample(b"J" * 3000))
+    assert all(d == "rover" and t == "PHOTO_CHUNK" for d, t, _ in sent) and len(sent) == 6
+    ids = [p["photo_id"] for _, _, p in sent]
+    assert ids[:3] == [ids[0]] * 3 and ids[3:] == [ids[3]] * 3 and ids[3] > ids[0]      # two messages, growing ids
+
+
+def test_rover_shows_the_uplink_picture_forming_then_complete():
+    n, s = node("rover")
+    data = bytes(range(256)) * 12                       # 3072 bytes = 3 chunks
+    bundles = _chunk_bundles(data, 5000)
+    now = time.time()
+    n.handle(bundles[0], now)
+    first = s.published("mesh/rover/uplink")[-1]
+    assert first["done"] is False and first["received"] == 1 and first["total"] == 3
+    assert first["partial_b64"]                          # the part that has arrived so far can be drawn
+    n.handle(bundles[2], now)                            # out of order: chunk 1 is still missing
+    mid = s.published("mesh/rover/uplink")[-1]
+    assert mid["received"] == 2 and not mid["done"]
+    import base64
+    assert len(base64.b64decode(mid["partial_b64"])) == 1024      # only the gap-free start (chunk 0)
+    n.handle(bundles[1], now)
+    last = s.published("mesh/rover/uplink")[-1]
+    assert last["done"] and last["ok"] and base64.b64decode(last["image_b64"]) == data
+
+
+def test_uplink_and_camera_photo_do_not_disturb_each_other():
+    """The rover's own photo (rover -> base) and the message from the base (base -> rover) are separate
+    streams with their own ids: a message never makes the base ignore a camera photo, or the reverse."""
+    rover, _ = node("rover")
+    base, bs = node("base")
+    for b in _chunk_bundles(b"M" * 2000, 9_999_999_999):            # a message with a huge id arrives at the rover
+        rover.handle(b, time.time())
+    for b in _chunk_bundles(b"C" * 2000, 100, src="rover", dst="base"):   # a camera photo with a small id reaches the base
+        base.handle(b, time.time())
+    photo = bs.published("mesh/base/photo")[-1]
+    assert photo["done"] and photo["ok"] and photo["photo_id"] == 100
+
+
+def test_uplink_chunks_wait_at_the_base_until_the_rover_can_be_heard():
+    """Mesh OFF and the rover out of reach: the message from the base cannot get through. Its chunks
+    stay in the base's store, and go out (to the rover or a drone towards it) only when a link exists."""
+    n, _ = node("base")
+
+    n.on_uplink_photo(_RawSample(b"J" * 5000))                      # 5 chunks
+    now = time.time()
+    assert len(n.store) == 5
+    out = n.tick(now + 0.1)
+    assert [p for p in out if p["type"] == "PHOTO_CHUNK"] == []     # nobody heard: nothing is sent, nothing is lost
+    assert len(n.store) == 5
+    n.neighbours["rover"] = now + 0.2                               # a HELLO from the rover: a link exists
+    out = n.tick(now + 0.3)
+    sent = [p for p in out if p["type"] == "PHOTO_CHUNK"]
+    assert len(sent) == 5 and all(p["next_hop"] == "rover" and p["dst"] == "rover" for p in sent)
+
+
+def test_simulation_restart_makes_every_unit_start_again_from_scratch():
+    """Gazebo's 'Restart simulation': stores, counters, mesh mode, the leader and pending pictures are forgotten,
+    killed drones come back, and late packets of the old run are ignored."""
+    n, s = node("drone_2")
+    n.coord.set_mode("on")
+    n.election.tick(time.time() + 5)                       # it became leader
+    n.handle(telemetry(next_hop="drone_2"), time.time())   # it holds a bundle in its store
+    assert len(n.store) == 1
+    n.killed = True
+    n.stats["sent"] = 99
+    n.neighbours["drone_1"] = time.time()
+    moves = []
+    n.mover.request = lambda target: moves.append(tuple(target))
+    n.on_reset(_Sample({"n": 5000}))
+    assert n.epoch == 5000 and not n.killed and len(n.store) == 0 and n.stats["sent"] == 0
+    assert n.coord.mode == "off" and not n.election.is_leader and not n.neighbours
+    assert moves == [tuple(n.coord.park["drone_2"])]       # it flies home
+    assert s.published("mesh/events")[-1]["event"] == "reset"
+    # a LEADER heartbeat of the run before (no / older epoch) is ignored, one of the new run is followed
+    old = decode(encode(make_packet("drone_1", "*", 1, "LEADER", {"leader": "drone_1", "term": 9, "mode": "on",
+                                    "routes": {}, "targets": {}}, next_hop="*")))[0]
+    n.on_control(old, time.time())
+    assert n.election.leader != "drone_1"
+    new = decode(encode(make_packet("drone_1", "*", 2, "LEADER", {"leader": "drone_1", "term": 1, "mode": "off",
+                                    "routes": {}, "targets": {}, "epoch": 5000}, next_hop="*")))[0]
+    n.on_control(new, time.time())
+    assert n.election.leader == "drone_1"
+    n.on_reset(_Sample({"n": 4000}))
+    assert n.epoch == 5000                                 # an older restart message changes nothing
