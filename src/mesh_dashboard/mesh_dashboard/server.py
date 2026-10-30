@@ -7,9 +7,14 @@ GET  /events           Server-Sent Events: "snapshot" 4x a second, "log" for eac
 POST /api/mesh         {"on": true|false}             mesh ON/OFF
 POST /api/failure      {"drop_probability": 0.1, "corrupt_probability": 0.2, "kill": "drone_2", "revive": ...}
 POST /api/photo        {}                             rover takes a photo, sends it to the base
-Listens on 127.0.0.1 only by default: the controls have no login.
+
+Watching is public; the three POST routes need the header `X-Passcode`. Listens on 127.0.0.1
+by default. `--host 0.0.0.0` shares the page on the LAN, and `--passcode ""` turns the check off
+for a loopback-only demo. The passcode travels in clear text: it keeps visitors out, it is not
+real authentication (put TLS in front if the network is untrusted).
 """
 import argparse
+import hmac
 import json
 import mimetypes
 import socket
@@ -24,6 +29,7 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 PERIOD = 0.25          # s between snapshots
 MAX_BODY = 64 * 1024   # bytes
 MAX_UPLOAD = 15 * 1024 * 1024
+PASSCODE = "kratos123"  # default; change with --passcode or empty string to disable
 
 
 def check_failure(cfg):
@@ -92,7 +98,7 @@ def make_phone_server(bridge, port=PHONE_PORT):
     return srv
 
 
-def make_server(bridge, host="127.0.0.1", port=8080):
+def make_server(bridge, host="127.0.0.1", port=8080, passcode=PASSCODE):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):          # keep the terminal quiet
             pass
@@ -145,9 +151,13 @@ def make_server(bridge, host="127.0.0.1", port=8080):
                 pass                                # browser went away
 
         def do_POST(self):
-            # JSON only: a cross-site page can send text/plain without a CORS preflight, never application/json
+            # JSON only: a cross-site page can send text/plain without a CORS preflight, never application/json.
+            # The passcode header does the same job: a custom header also forces a preflight.
             if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
                 return self._reply(415, b'{"error": "send application/json"}')
+            supplied = self.headers.get("X-Passcode") or ""
+            if passcode and not hmac.compare_digest(supplied.encode(), passcode.encode()):
+                return self._reply(401, b'{"error": "passcode required"}')
             try:
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
@@ -177,13 +187,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--passcode", default=PASSCODE,
+                    help='controls passcode (default "kratos123", "" disables the check)')
     args, _ = ap.parse_known_args()
     from mesh_dashboard.bridge import Bridge
     bridge = Bridge()
-    srv = make_server(bridge, args.host, args.port)
+    srv = make_server(bridge, args.host, args.port, args.passcode)
     threading.Thread(target=make_phone_server(bridge).serve_forever, daemon=True).start()
     print(f"[dashboard] open http://{'localhost' if args.host == '127.0.0.1' else args.host}:{args.port}",
           flush=True)
+    print(f"[dashboard] controls {'locked (passcode required)' if args.passcode else 'unlocked'}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

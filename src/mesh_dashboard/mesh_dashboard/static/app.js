@@ -223,9 +223,31 @@ function addLog(e) {
 }
 
 // ---------------------------------------------------------------- wiring
-async function post(path, body) {
+// Controls are locked by a passcode the server checks on every POST. It is never stored in this
+// file: the browser asks once per tab (sessionStorage) and the header travels in clear text.
+const PASS_KEY = "meshPasscode";
+
+function passcode(ask) {
+  let p = sessionStorage.getItem(PASS_KEY);
+  if (!p || ask) {
+    p = window.prompt("Passcode for simulation controls:");
+    if (p) sessionStorage.setItem(PASS_KEY, p);
+  }
+  return p || "";
+}
+
+async function post(path, body, retried) {
   try {
-    await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Passcode": passcode(false) },
+      body: JSON.stringify(body),
+    });
+    if (r.status !== 401) return;
+    sessionStorage.removeItem(PASS_KEY);
+    if (!retried && passcode(true)) return post(path, body, true);
+    console.warn("controls locked: passcode refused");
+    window.alert("Controls are locked: wrong passcode.");
   } catch (err) { console.warn(err); }
 }
 $("meshBtn").onclick = () => post("/api/mesh", { on: $("meshBtn").getAttribute("aria-pressed") !== "true" });
